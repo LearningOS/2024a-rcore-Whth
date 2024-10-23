@@ -1,6 +1,6 @@
 name: Jobs
 
-on: [push]
+on: [ push ]
 
 env:
   CARGO_TERM_COLOR: always
@@ -32,16 +32,24 @@ jobs:
       image: duskmoon/dev-env:rcore-ci
     steps:
       - uses: actions/checkout@v4
-      - name: Run tests
+      - name: check_env
         run: |
           qemu-system-riscv64 --version
           rustup target add riscv64gc-unknown-none-elf
+      - name: clone_eval_repo
+        run: |
           git config --global --add safe.directory /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}
           git clone https://github.com/LearningOS/rCore-Tutorial-Checker-2024A.git ci-user
           git clone https://github.com/LearningOS/rCore-Tutorial-Test-2024A.git ci-user/user
+      - name: Run tests
+        run: |
           ID=`git rev-parse --abbrev-ref HEAD | grep -oP 'ch\K[0-9]'`
           # cd ci-user && make test CHAPTER=$ID passwd=${{ secrets.BASE_TEST_TOKEN }}
-          cd ci-user && make test CHAPTER=$ID passwd=${{ secrets.BASE_TEST_TOKEN }} > ../output.txt
+          cd ci-user 
+          make test CHAPTER=$ID passwd=${{ secrets.BASE_TEST_TOKEN }} > ../output.txt
+
+      - name: print_log
+        run: |
           cat ../output.txt
       - name: end
         id: end
