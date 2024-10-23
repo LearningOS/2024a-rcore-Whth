@@ -56,14 +56,12 @@ lazy_static! {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
             task_start_time:0,
-            task_id:0,
             task_syscall_times:[0;MAX_SYSCALL_NUM],
         }; MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
             task.task_status = TaskStatus::Ready;
             task.task_start_time = get_time_ms();
-            task.task_id= i;
         }
         TaskManager {
             num_app,
@@ -143,12 +141,6 @@ impl TaskManager {
     }
 
 
-    fn get_current_task_id(&self) -> usize {
-        let inner = self.inner.exclusive_access();
-        let current = inner.current_task;
-        inner.tasks[current].task_id
-    }
-
     fn get_current_task_start_time(&self) -> usize {
         let inner = self.inner.exclusive_access();
         let current = inner.current_task;
@@ -165,7 +157,6 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let current = inner.current_task;
 
-        debug!("[TASK]: app_{}, use syscall {}", inner.tasks[current].task_id, syscall_id);
         inner.tasks[current].task_syscall_times[syscall_id] += 1;
     }
     fn get_current_task_syscall_times(&self) -> [u32; MAX_SYSCALL_NUM] {
@@ -177,9 +168,6 @@ impl TaskManager {
 
 
 /// Get current task id
-pub fn get_current_task_id() -> usize {
-    TASK_MANAGER.get_current_task_id()
-}
 
 /// Get current task start time
 pub fn get_current_task_start_time() -> usize {

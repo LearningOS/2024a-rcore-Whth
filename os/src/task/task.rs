@@ -14,9 +14,6 @@ pub struct TaskControlBlock {
     /// The start time of the task(ms)
     pub task_start_time: usize,
 
-    /// The number of times the task has been scheduled
-    pub task_id: usize,
-
     /// The number of syscalls made by the task
     pub task_syscall_times: [u32; MAX_SYSCALL_NUM],
 }
