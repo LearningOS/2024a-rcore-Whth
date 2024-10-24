@@ -50,7 +50,7 @@ jobs:
 
       - name: print_log
         run: |
-          cat ../output.txt
+          cat output.txt
       - name: end
         id: end
         run: |
