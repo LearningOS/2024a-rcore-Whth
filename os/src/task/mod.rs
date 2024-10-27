@@ -22,6 +22,7 @@ use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
 
+use crate::config::MAX_SYSCALL_NUM;
 pub use context::TaskContext;
 
 /// The task manager, where all the tasks are managed.
@@ -153,6 +154,40 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+
+    fn update_cur_syscall_times(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].sys_call_times[syscall_id] += 1;
+    }
+
+
+    fn get_current_task_runtime(&self) -> usize {
+        let inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].run_time()
+    }
+
+    fn get_current_task_syscall_times(&self) -> [u32; MAX_SYSCALL_NUM] {
+        let inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].sys_call_times
+    }
+}
+
+
+/// Get current task's syscall times
+pub fn get_current_task_syscall_times() -> [u32; MAX_SYSCALL_NUM] {
+    TASK_MANAGER.get_current_task_syscall_times()
+}
+/// Get current task's runtime
+pub fn get_current_task_runtime() -> usize {
+    TASK_MANAGER.get_current_task_runtime()
+}
+/// Update the current syscall times
+pub fn update_cur_syscall_times(syscall_id: usize) {
+    TASK_MANAGER.update_cur_syscall_times(syscall_id);
 }
 
 /// Run the first task in task list.
