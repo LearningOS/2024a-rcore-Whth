@@ -1,7 +1,7 @@
 //! Process management syscalls
 
 use crate::mm::copy_to_cur_user;
-use crate::task::{get_current_task_runtime, get_current_task_syscall_times};
+use crate::task::{get_current_task_runtime, get_current_task_syscall_times, mmap_cur_task, munmap_cur_task};
 use crate::timer::get_time_us;
 use crate::{
     config::MAX_SYSCALL_NUM,
@@ -67,6 +67,7 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TaskInfo`] is splitted by two pages ?
 pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
+    trace!("kernel: sys_task_info");
     if _ti.is_null() {
         return -1;
     }
@@ -85,14 +86,18 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
 
 // YOUR JOB: Implement mmap.
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    -1
+    trace!("kernel: sys_mmap");
+    debug!("request mmap: {:x} {:x} {:x}", _start, _len, _port);
+    mmap_cur_task(_start, _len, _port)
 }
 
 
 // YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!("kernel: sys_munmap NOT IMPLEMENTED YET!");
-    -1
+    trace!("kernel: sys_munmap");
+    debug!("request munmap: {:x} {:x}", _start, _len);
+
+    munmap_cur_task(_start, _len)
 }
 /// change data segment size
 pub fn sys_sbrk(size: i32) -> isize {

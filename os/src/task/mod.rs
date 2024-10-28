@@ -156,14 +156,14 @@ impl TaskManager {
     }
 
 
-    fn update_cur_syscall_times(&self, syscall_id: usize) {
+    fn update_cur_task_syscall_times(&self, syscall_id: usize) {
         let mut inner = self.inner.exclusive_access();
         let cur = inner.current_task;
         inner.tasks[cur].sys_call_times[syscall_id] += 1;
     }
 
 
-    fn get_current_task_runtime(&self) -> usize {
+    fn get_cur_task_runtime(&self) -> usize {
         let inner = self.inner.exclusive_access();
         let cur = inner.current_task;
         inner.tasks[cur].run_time()
@@ -174,8 +174,27 @@ impl TaskManager {
         let cur = inner.current_task;
         inner.tasks[cur].sys_call_times
     }
+
+    fn mmap_cur_task(&self, start: usize, len: usize, prot: usize) -> isize {
+        let cur = self.inner.exclusive_access().current_task;
+        self.inner.exclusive_access().tasks[cur].mmap(start, len, prot)
+    }
+
+    fn unmap_cur_task(&self, start: usize, len: usize) -> isize {
+        let cur = self.inner.exclusive_access().current_task;
+        self.inner.exclusive_access().tasks[cur].munmap(start, len)
+    }
 }
 
+/// Unmap the task's mmap region
+pub fn munmap_cur_task(start: usize, len: usize) -> isize {
+    TASK_MANAGER.unmap_cur_task(start, len)
+}
+
+/// Map the task's mmap region
+pub fn mmap_cur_task(start: usize, len: usize, prot: usize) -> isize {
+    TASK_MANAGER.mmap_cur_task(start, len, prot)
+}
 
 /// Get current task's syscall times
 pub fn get_current_task_syscall_times() -> [u32; MAX_SYSCALL_NUM] {
@@ -183,11 +202,11 @@ pub fn get_current_task_syscall_times() -> [u32; MAX_SYSCALL_NUM] {
 }
 /// Get current task's runtime
 pub fn get_current_task_runtime() -> usize {
-    TASK_MANAGER.get_current_task_runtime()
+    TASK_MANAGER.get_cur_task_runtime()
 }
 /// Update the current syscall times
 pub fn update_cur_syscall_times(syscall_id: usize) {
-    TASK_MANAGER.update_cur_syscall_times(syscall_id);
+    TASK_MANAGER.update_cur_task_syscall_times(syscall_id);
 }
 
 /// Run the first task in task list.

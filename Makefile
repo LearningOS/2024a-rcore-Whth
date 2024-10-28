@@ -14,3 +14,11 @@ fmt:
 report:
 	mkdir -p reports
 	echo "# report" > "reports/lab$(ID).md"
+
+clean:
+	rm -rf user ci-user
+
+checker: clean
+	git clone https://ghp.ci/https://github.com/LearningOS/rCore-Tutorial-Test-2024A user --depth 1
+	git clone https://ghp.ci/https://github.com/LearningOS/rCore-Tutorial-Checker-2024A.git ci-user --depth 1
+	cp -r user ci-user/user

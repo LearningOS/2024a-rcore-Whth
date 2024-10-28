@@ -227,6 +227,17 @@ where
     pub fn get_end(&self) -> T {
         self.r
     }
+
+    /// check if item is in the range, inclusive
+    pub fn contains(&self, item: T) -> bool {
+        item > self.l && item < self.r
+    }
+
+
+    /// check if two ranges intersect
+    pub fn intersect(&self, other: &SimpleRange<T>) -> bool {
+        !(self.r <= other.l || self.l >= other.r)
+    }
 }
 impl<T> IntoIterator for SimpleRange<T>
 where

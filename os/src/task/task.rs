@@ -1,9 +1,8 @@
 //! Types related to task management
+
 use super::TaskContext;
 use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
-use crate::mm::{
-    kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,
-};
+use crate::mm::{kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::timer::get_time_ms;
 use crate::trap::{trap_handler, TrapContext};
 /// The task control block (TCB) of a task.
@@ -110,6 +109,46 @@ impl TaskControlBlock {
     /// get the running time of the task
     pub fn run_time(&self) -> usize {
         get_time_ms() - self.start_time
+    }
+
+    /// map a virtual address range to physical address range
+    pub fn mmap(&mut self, start: usize, len: usize, port: usize) -> isize {
+        let virt_start = VirtAddr::from(start);
+        if !virt_start.aligned() {
+            error!("unaligned start address");
+
+
+            return -1;
+        }
+        let virt_end = VirtAddr::from(start + len);
+
+        if let Some(perm) = MapPermission::from_port(port) {
+            if self.memory_set.conflict_with(virt_start.floor(), virt_end.ceil()) {
+                error!("conflict with other mmap");
+                -1
+            } else {
+                self.memory_set.insert_framed_area(virt_start, virt_end, perm | MapPermission::U);
+                debug!("success alloc memory for start: 0x{:x}, end: 0x{:x}", virt_start.0, virt_end.0);
+                0
+            }
+        } else {
+            error!("bad permission convert");
+            -1
+        }
+    }
+
+    /// unmap a virtual address range
+    pub fn munmap(&mut self, start: usize, len: usize) -> isize {
+        let virt_start = VirtAddr::from(start);
+        if !virt_start.aligned() {
+            return -1;
+        }
+        let virt_end = VirtAddr::from(start + len);
+        if !self.memory_set.validate_vpnrange(virt_start.floor(), virt_end.ceil()) {
+            return -1;
+        }
+        self.memory_set.cleanse_framed_area(virt_start, virt_end);
+        0
     }
 }
 
