@@ -1,6 +1,8 @@
 //! Process management syscalls
 use alloc::sync::Arc;
 
+use crate::mm::copy_to_cur_user;
+use crate::timer::get_time_us;
 use crate::{
     config::MAX_SYSCALL_NUM,
     loader::get_app_data_by_name,
@@ -17,6 +19,14 @@ pub struct TimeVal {
     pub sec: usize,
     pub usec: usize,
 }
+
+impl Clone for TimeVal {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl Copy for TimeVal {}
 
 /// Task information
 #[allow(dead_code)]
@@ -118,11 +128,20 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
 pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    trace!("kernel: sys_get_time");
+    if _ts.is_null() {
+        return -1;
+    }
+    let time_us = get_time_us();
+
+
+    let time_val = TimeVal {
+        sec: time_us / 1_000_000,
+        usec: time_us % 1_000_000,
+    };
+
+    copy_to_cur_user(&time_val, _ts);
+    0
 }
 
 /// YOUR JOB: Finish sys_task_info to pass testcases
