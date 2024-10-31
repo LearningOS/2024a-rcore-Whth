@@ -65,10 +65,11 @@ impl MemorySet {
     }
 
     /// clean the mapping of the given range
-    pub fn cleanse_framed_area(&mut self, start_va: VirtAddr, end: VirtAddr) {
+    pub fn cleanse_framed_area(&mut self, start_va: VirtAddr, end_va: VirtAddr) {
         if let Some(tgt_ind) = self.areas.iter().position(|area|
-            area.vpn_range.get_end() == start_va.floor() && area.vpn_range.get_start() == end.ceil()) {
-            self.areas.get_mut(tgt_ind).unwrap().unmap(&mut self.page_table)
+            area.vpn_range.get_start() == start_va.floor() && area.vpn_range.get_end() == end_va.ceil()) {
+            self.areas.get_mut(tgt_ind).unwrap().unmap(&mut self.page_table);
+            self.areas.remove(tgt_ind);
         }
     }
     /// 在内存管理器中添加一个新的映射区域
@@ -305,7 +306,10 @@ impl MemorySet {
         self.areas.iter().any(|area| {
             let vpnrange = VPNRange::new(start_vpn, end_vpn);
             let ret = area.vpn_range.intersect(&vpnrange);
-            warn!("conflict={ret}: tgt[{:x},{:x}) and exist[{:x},{:x})", vpnrange.get_start().0,vpnrange.get_end().0, area.vpn_range.get_start().0, area.vpn_range.get_end().0);
+            if ret {
+                error!("conflict={ret}: tgt[{:x},{:x}) and exist[{:x},{:x})", vpnrange.get_start().0,vpnrange.get_end().0, area.vpn_range.get_start().0, area.vpn_range.get_end().0);
+            }
+
 
             ret
         })
@@ -467,7 +471,7 @@ bitflags! {
 impl MapPermission {
     /// Convert from port to permission bits.
     pub fn from_port(port: usize) -> Option<Self> {
-        if port <= 0b111 {
+        if 0 < port && port <= 0b111 {
             MapPermission::from_bits((port as u8) << 1)
         } else { None }
     }

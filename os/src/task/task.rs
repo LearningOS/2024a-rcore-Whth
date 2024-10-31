@@ -116,8 +116,6 @@ impl TaskControlBlock {
         let virt_start = VirtAddr::from(start);
         if !virt_start.aligned() {
             error!("unaligned start address");
-
-
             return -1;
         }
         let virt_end = VirtAddr::from(start + len);

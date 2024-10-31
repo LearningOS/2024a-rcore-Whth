@@ -236,7 +236,7 @@ where
 
     /// check if two ranges intersect
     pub fn intersect(&self, other: &SimpleRange<T>) -> bool {
-        !(self.r <= other.l || self.l >= other.r)
+        (self.l <= other.l && other.l < self.r) || (self.l < other.r && other.r <= self.r)
     }
 }
 impl<T> IntoIterator for SimpleRange<T>
