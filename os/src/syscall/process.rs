@@ -2,6 +2,7 @@
 use alloc::sync::Arc;
 
 use crate::mm::copy_to_cur_user;
+use crate::task::TaskControlBlock;
 use crate::timer::get_time_us;
 use crate::{
     config::MAX_SYSCALL_NUM,
@@ -30,6 +31,7 @@ impl Copy for TimeVal {}
 
 /// Task information
 #[allow(dead_code)]
+#[derive(Copy, Clone)]
 pub struct TaskInfo {
     /// Task status in it's life cycle
     status: TaskStatus,
@@ -37,6 +39,19 @@ pub struct TaskInfo {
     syscall_times: [u32; MAX_SYSCALL_NUM],
     /// Total running time of task
     time: usize,
+}
+
+
+impl TaskInfo {
+    pub fn from_task_ref(task_ref: &Arc<TaskControlBlock>) -> Self {
+        let excl_task_ref = task_ref.inner_exclusive_access();
+        let info = TaskInfo {
+            status: excl_task_ref.get_status(),
+            syscall_times: *excl_task_ref.get_syscall_times(),
+            time: excl_task_ref.run_time(),
+        };
+        info
+    }
 }
 
 /// task exits and submit an exit code
@@ -148,29 +163,27 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TaskInfo`] is splitted by two pages ?
 pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_task_info NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    if let Some(task) = current_task() {
+        let task_info = TaskInfo::from_task_ref(&task);
+
+        copy_to_cur_user(&task_info, _ti);
+
+        0
+    } else { -1 }
 }
 
 /// YOUR JOB: Implement mmap.
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    if let Some(task) = current_task() {
+        task.inner_exclusive_access().mmap(_start, _len, _port)
+    } else { -1 }
 }
 
 /// YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    if let Some(task) = current_task() {
+        task.inner_exclusive_access().munmap(_start, _len)
+    } else { -1 }
 }
 
 /// change data segment size

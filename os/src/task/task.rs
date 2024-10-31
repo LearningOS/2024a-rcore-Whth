@@ -1,9 +1,10 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::TRAP_CONTEXT_BASE;
-use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
+use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
+use crate::mm::{MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
+use crate::timer::get_time_ms;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
@@ -68,6 +69,12 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// The number of times each syscall is called
+    pub sys_call_times: [u32; MAX_SYSCALL_NUM],
+
+    /// The start time of the task
+    pub start_time: usize,
 }
 
 impl TaskControlBlockInner {
@@ -79,11 +86,61 @@ impl TaskControlBlockInner {
     pub fn get_user_token(&self) -> usize {
         self.memory_set.token()
     }
-    fn get_status(&self) -> TaskStatus {
+    pub fn get_status(&self) -> TaskStatus {
         self.task_status
     }
     pub fn is_zombie(&self) -> bool {
         self.get_status() == TaskStatus::Zombie
+    }
+    /// get the running time of the task
+    pub fn run_time(&self) -> usize {
+        get_time_ms() - self.start_time
+    }
+
+    /// map a virtual address range to physical address range
+    pub fn mmap(&mut self, start: usize, len: usize, port: usize) -> isize {
+        let virt_start = VirtAddr::from(start);
+        if !virt_start.aligned() {
+            error!("unaligned start address");
+            return -1;
+        }
+        let virt_end = VirtAddr::from(start + len);
+
+        if let Some(perm) = MapPermission::from_port(port) {
+            if self.memory_set.conflict_with(virt_start.floor(), virt_end.ceil()) {
+                error!("conflict with other mmap");
+                -1
+            } else {
+                self.memory_set.insert_framed_area(virt_start, virt_end, perm | MapPermission::U);
+                debug!("success alloc memory for start: 0x{:x}, end: 0x{:x}", virt_start.0, virt_end.0);
+                0
+            }
+        } else {
+            error!("bad permission convert");
+            -1
+        }
+    }
+
+    /// unmap a virtual address range
+    pub fn munmap(&mut self, start: usize, len: usize) -> isize {
+        let virt_start = VirtAddr::from(start);
+        if !virt_start.aligned() {
+            return -1;
+        }
+        let virt_end = VirtAddr::from(start + len);
+        if !self.memory_set.validate_vpnrange(virt_start.floor(), virt_end.ceil()) {
+            return -1;
+        }
+        self.memory_set.cleanse_framed_area(virt_start, virt_end);
+        0
+    }
+
+    pub fn update_syscall_times(&mut self, syscall_id: usize) {
+        self.sys_call_times[syscall_id] += 1;
+    }
+
+    pub fn get_syscall_times(&self) -> &[u32; MAX_SYSCALL_NUM] {
+        &self.sys_call_times
     }
 }
 
@@ -118,6 +175,8 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    sys_call_times: [0; MAX_SYSCALL_NUM],
+                    start_time: get_time_ms(),
                 })
             },
         };
@@ -191,6 +250,8 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    sys_call_times: [0; MAX_SYSCALL_NUM],
+                    start_time: get_time_ms(),
                 })
             },
         });

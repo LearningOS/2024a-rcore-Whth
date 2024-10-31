@@ -1,4 +1,5 @@
 //! Implementation of [`MapArea`] and [`MemorySet`].
+
 use super::{frame_alloc, FrameTracker};
 use super::{PTEFlags, PageTable, PageTableEntry};
 use super::{PhysAddr, PhysPageNum, VirtAddr, VirtPageNum};
@@ -72,16 +73,38 @@ impl MemorySet {
             self.areas.remove(idx);
         }
     }
-    /// Add a new MapArea into this MemorySet.
-    /// Assuming that there are no conflicts in the virtual address
-    /// space.
+    /// clean the mapping of the given range
+    pub fn cleanse_framed_area(&mut self, start_va: VirtAddr, end_va: VirtAddr) {
+        if let Some(tgt_ind) = self.areas.iter().position(|area|
+            area.vpn_range.get_start() == start_va.floor() && area.vpn_range.get_end() == end_va.ceil()) {
+            self.areas.get_mut(tgt_ind).unwrap().unmap(&mut self.page_table);
+            self.areas.remove(tgt_ind);
+        }
+    }
+    /// 在内存管理器中添加一个新的映射区域
+    ///
+    /// # Parameters
+    ///
+    /// - `map_area`: 一个 `MapArea` 实例，表示要映射的内存区域
+    /// - `data`: 一个可选的字节切片引用，如果提供，则用于初始化映射区域的数据
+    ///
+    /// # Description
+    ///
+    /// 此函数首先将给定的 `map_area` 映射到内存管理器的页表中，然后根据 `data` 参数的有无决定是否将数据复制到新映射的区域中
+    /// 最后，将 `map_area` 添加到内存管理器维护的映射区域列表中
     fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
+        // 将映射区域映射到内存管理器的页表中
         map_area.map(&mut self.page_table);
+
+        // 如果提供了数据，则将数据复制到新映射的区域中
         if let Some(data) = data {
             map_area.copy_data(&mut self.page_table, data);
         }
+
+        // 将新的映射区域添加到映射区域列表中
         self.areas.push(map_area);
     }
+
     /// Mention that trampoline is not collected by areas.
     fn map_trampoline(&mut self) {
         self.page_table.map(
@@ -286,19 +309,66 @@ impl MemorySet {
         }
     }
 
-    /// append the area to new_end
+    /// Append the area to new_end
+    ///
+    /// # Arguments
+    ///
+    /// * `start` - The starting address of the area to find
+    /// * `new_end` - The new ending address to append to
+    ///
+    /// # Returns
+    ///
+    /// * `true` if the area is successfully appended, otherwise `false`
     #[allow(unused)]
     pub fn append_to(&mut self, start: VirtAddr, new_end: VirtAddr) -> bool {
+        // Find the area that needs to be appended in self.areas
         if let Some(area) = self
             .areas
             .iter_mut()
             .find(|area| area.vpn_range.get_start() == start.floor())
         {
+            // If the area is found, append it to the new_end
             area.append_to(&mut self.page_table, new_end.ceil());
             true
         } else {
+            // If the area is not found, return false
             false
         }
+    }
+
+    /// Check if the given virtual address range conflicts with any existing areas
+    pub fn conflict_with(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> bool {
+        self.areas.iter().any(|area| {
+            let vpnrange = VPNRange::new(start_vpn, end_vpn);
+            let ret = area.vpn_range.intersect(&vpnrange);
+            if ret {
+                error!("conflict={ret}: tgt[{:x},{:x}) and exist[{:x},{:x})", vpnrange.get_start().0,vpnrange.get_end().0, area.vpn_range.get_start().0, area.vpn_range.get_end().0);
+            }
+
+
+            ret
+        })
+    }
+
+    /// Check if the given virtual page is free and not mapped yet
+    pub fn is_free_page(&self, vpn: VirtPageNum) -> bool {
+        !self.areas.iter().any(|area| {
+            area.vpn_range.contains(vpn)
+        })
+    }
+    /// Check if the given virtual address range is valid
+    pub fn validate_vpnrange(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> bool {
+        assert!(start_vpn.0 <= end_vpn.0, "start_vpn:{} > end_vpn:{}", start_vpn.0, end_vpn.0);
+        VPNRange::new(start_vpn, end_vpn)
+            .into_iter()
+            .all(|vpn| {
+                if let Some(pte) = self.translate(vpn)
+                {
+                    pte.is_valid()
+                } else {
+                    false
+                }
+            })
     }
 }
 /// map area structure, controls a contiguous piece of virtual memory
@@ -348,17 +418,35 @@ impl MapArea {
         let pte_flags = PTEFlags::from_bits(self.map_perm.bits).unwrap();
         page_table.map(vpn, ppn, pte_flags);
     }
+    /// 从页表中解除一个虚拟页号的映射
+    ///
+    /// # Parameters
+    ///
+    /// * `page_table`: 一个可变引用，指向`PageTable`实例，用于管理页表
+    /// * `vpn`: 虚拟页号，表示要从页表中解除映射的页面
+    ///
+    /// # Remarks
+    ///
+    /// 此函数首先检查当前映射类型是否为`Framed`（帧映射），如果是，则从数据帧中移除对应的虚拟页号
+    /// 然后，调用页表的`unmap`方法来解除该虚拟页号的映射
+    #[allow(unused)]
     pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         if self.map_type == MapType::Framed {
             self.data_frames.remove(&vpn);
         }
         page_table.unmap(vpn);
     }
+    /// 将一个地址空间范围内的所有页映射到页表中
+    ///
+    /// # Parameters
+    ///
+    /// * `page_table`: 一个可变引用到`PageTable`，表示要进行页映射的页表
     pub fn map(&mut self, page_table: &mut PageTable) {
         for vpn in self.vpn_range {
             self.map_one(page_table, vpn);
         }
     }
+    #[allow(unused)]
     pub fn unmap(&mut self, page_table: &mut PageTable) {
         for vpn in self.vpn_range {
             self.unmap_one(page_table, vpn);
@@ -422,7 +510,14 @@ bitflags! {
         const U = 1 << 4;
     }
 }
-
+impl MapPermission {
+    /// Convert from port to permission bits.
+    pub fn from_port(port: usize) -> Option<Self> {
+        if 0 < port && port <= 0b111 {
+            MapPermission::from_bits((port as u8) << 1)
+        } else { None }
+    }
+}
 /// remap test in kernel space
 #[allow(unused)]
 pub fn remap_test() {
