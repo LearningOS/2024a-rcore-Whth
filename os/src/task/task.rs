@@ -1,15 +1,17 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::TRAP_CONTEXT_BASE;
+use crate::config::{BIG_STRIDE, DEFAULT_PRIORITY, INIT_STRIDE, MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
 use crate::fs::{File, Stdin, Stdout};
-use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
+use crate::mm::{MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
+use crate::timer::get_time_ms;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefMut;
+use core::cmp::Ordering;
 
 /// Task control block structure
 ///
@@ -71,6 +73,18 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// The number of times each syscall is called
+    pub sys_call_times: [u32; MAX_SYSCALL_NUM],
+
+    /// The start time of the task
+    pub start_time: usize,
+
+    /// Priority
+    pub priority: isize,
+
+    /// stride algorithm
+    pub stride: Stride,
 }
 
 impl TaskControlBlockInner {
@@ -80,7 +94,7 @@ impl TaskControlBlockInner {
     pub fn get_user_token(&self) -> usize {
         self.memory_set.token()
     }
-    fn get_status(&self) -> TaskStatus {
+    pub fn get_status(&self) -> TaskStatus {
         self.task_status
     }
     pub fn is_zombie(&self) -> bool {
@@ -93,6 +107,76 @@ impl TaskControlBlockInner {
             self.fd_table.push(None);
             self.fd_table.len() - 1
         }
+    }
+    /// get the running time of the task
+    pub fn run_time(&self) -> usize {
+        get_time_ms() - self.start_time
+    }
+
+    /// map a virtual address range to physical address range
+    pub fn mmap(&mut self, start: usize, len: usize, port: usize) -> isize {
+        let virt_start = VirtAddr::from(start);
+        if !virt_start.aligned() {
+            error!("unaligned start address");
+            return -1;
+        }
+        let virt_end = VirtAddr::from(start + len);
+
+        if let Some(perm) = MapPermission::from_port(port) {
+            if self.memory_set.conflict_with(virt_start.floor(), virt_end.ceil()) {
+                error!("conflict with other mmap");
+                -1
+            } else {
+                self.memory_set.insert_framed_area(virt_start, virt_end, perm | MapPermission::U);
+                debug!("success alloc memory for start: 0x{:x}, end: 0x{:x}", virt_start.0, virt_end.0);
+                0
+            }
+        } else {
+            error!("bad permission convert");
+            -1
+        }
+    }
+
+    /// unmap a virtual address range
+    pub fn munmap(&mut self, start: usize, len: usize) -> isize {
+        let virt_start = VirtAddr::from(start);
+        if !virt_start.aligned() {
+            return -1;
+        }
+        let virt_end = VirtAddr::from(start + len);
+        if !self.memory_set.validate_vpnrange(virt_start.floor(), virt_end.ceil()) {
+            return -1;
+        }
+        self.memory_set.cleanse_framed_area(virt_start, virt_end);
+        0
+    }
+
+    pub fn update_syscall_times(&mut self, syscall_id: usize) {
+        self.sys_call_times[syscall_id] += 1;
+    }
+
+    pub fn get_syscall_times(&self) -> &[u32; MAX_SYSCALL_NUM] {
+        &self.sys_call_times
+    }
+
+    pub fn get_priority(&self) -> isize {
+        self.priority
+    }
+
+    pub fn set_priority(&mut self, priority: isize) {
+        self.priority = priority;
+    }
+
+
+    pub fn get_stride(&self) -> Stride {
+        self.stride
+    }
+
+
+    pub fn update_stride(&mut self) {
+        let n_s = (self.stride.0 + INIT_STRIDE * self.priority as u64) % (BIG_STRIDE + 1);
+        debug!("update stride: {}", n_s);
+        self.stride.update(n_s)
     }
 }
 
@@ -135,6 +219,10 @@ impl TaskControlBlock {
                     ],
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    sys_call_times: [0; MAX_SYSCALL_NUM],
+                    start_time: get_time_ms(),
+                    priority: DEFAULT_PRIORITY,
+                    stride: Stride::default(),
                 })
             },
         };
@@ -176,6 +264,65 @@ impl TaskControlBlock {
         *inner.get_trap_cx() = trap_cx;
         // **** release current PCB
     }
+    /// Spawn a child process from current process
+    pub fn spawn(self: &Arc<Self>, elf_data: &[u8]) -> Arc<Self> {
+        let mut parent_inner = self.inner_exclusive_access();
+        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
+
+        let trap_cx_ppn = memory_set
+            .translate(VirtAddr::from(TRAP_CONTEXT_BASE).into())
+            .unwrap()
+            .ppn();
+
+        // alloc a pid and a kernel stack in kernel space
+        let pid_handle = pid_alloc();
+        let kernel_stack = kstack_alloc();
+        let kernel_stack_top = kernel_stack.get_top();
+        let task_control_block = Arc::new(Self {
+            pid: pid_handle,
+            kernel_stack,
+            inner: unsafe {
+                UPSafeCell::new(TaskControlBlockInner {
+                    trap_cx_ppn,
+                    base_size: user_sp,
+                    task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+                    task_status: TaskStatus::Ready,
+                    memory_set,
+                    parent: Some(Arc::downgrade(self)),
+                    children: Vec::new(),
+                    exit_code: 0,
+                    fd_table: vec![
+                        // 0 -> stdin
+                        Some(Arc::new(Stdin)),
+                        // 1 -> stdout
+                        Some(Arc::new(Stdout)),
+                        // 2 -> stderr
+                        Some(Arc::new(Stdout)),
+                    ],
+                    heap_bottom: user_sp,
+                    program_brk: user_sp,
+                    sys_call_times: [0; MAX_SYSCALL_NUM],
+                    start_time: get_time_ms(),
+                    priority: parent_inner.priority,
+                    stride: parent_inner.stride,
+                })
+            },
+        });
+        // add child
+        parent_inner.children.push(task_control_block.clone());
+        // modify kernel_sp in trap_cx
+        // **** access child PCB exclusively
+        let trap_cx = task_control_block.inner_exclusive_access().get_trap_cx();
+        *trap_cx = TrapContext::app_init_context(
+            entry_point,
+            user_sp,
+            KERNEL_SPACE.exclusive_access().token(),
+            kernel_stack_top,
+            trap_handler as usize,
+        );
+        // return
+        task_control_block
+    }
 
     /// parent process fork the child process
     pub fn fork(self: &Arc<TaskControlBlock>) -> Arc<TaskControlBlock> {
@@ -216,6 +363,10 @@ impl TaskControlBlock {
                     fd_table: new_fd_table,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    sys_call_times: [0; MAX_SYSCALL_NUM],
+                    start_time: get_time_ms(),
+                    priority: parent_inner.priority,
+                    stride: parent_inner.stride,
                 })
             },
         });
@@ -275,3 +426,65 @@ pub enum TaskStatus {
     /// exited
     Zombie,
 }
+
+
+#[derive(Copy, Clone, Default)]
+pub struct Stride(u64);
+
+
+impl Stride {
+    pub fn new(stride: usize)
+               -> Self {
+        Stride(stride as u64)
+    }
+
+    pub fn update(&mut self, stride: u64) {
+        self.0 = stride;
+    }
+}
+
+
+impl Ord for Stride {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let diff = (self.0 - other.0 + BIG_STRIDE) % BIG_STRIDE;
+        if diff <= BIG_STRIDE / 2 {
+            Ordering::Greater
+        } else {
+            Ordering::Less
+        }
+    }
+}
+impl Eq for Stride {}
+impl PartialOrd for Stride {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for Stride {
+    fn eq(&self, _other: &Self) -> bool {
+        false
+    }
+}
+
+
+impl Ord for TaskControlBlock {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.inner_exclusive_access().get_stride().cmp(
+            &other.inner_exclusive_access().get_stride()
+        )
+    }
+}
+impl Eq for TaskControlBlock {}
+impl PartialOrd for TaskControlBlock {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(other.cmp(self)) }
+}
+
+impl PartialEq for TaskControlBlock {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner_exclusive_access().get_stride().eq(
+            &other.inner_exclusive_access().get_stride()
+        )
+    }
+}
+

@@ -2,6 +2,9 @@
 //!
 use alloc::sync::Arc;
 
+use crate::mm::copy_to_cur_user;
+use crate::task::TaskControlBlock;
+use crate::timer::get_time_us;
 use crate::{
     config::MAX_SYSCALL_NUM,
     fs::{open_file, OpenFlags},
@@ -19,8 +22,17 @@ pub struct TimeVal {
     pub usec: usize,
 }
 
+impl Clone for TimeVal {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl Copy for TimeVal {}
+
 /// Task information
 #[allow(dead_code)]
+#[derive(Copy, Clone)]
 pub struct TaskInfo {
     /// Task status in it's life cycle
     status: TaskStatus,
@@ -30,6 +42,20 @@ pub struct TaskInfo {
     time: usize,
 }
 
+
+impl TaskInfo {
+    pub fn from_task_ref(task_ref: &Arc<TaskControlBlock>) -> Self {
+        let excl_task_ref = task_ref.inner_exclusive_access();
+        let info = TaskInfo {
+            status: excl_task_ref.get_status(),
+            syscall_times: *excl_task_ref.get_syscall_times(),
+            time: excl_task_ref.run_time(),
+        };
+        info
+    }
+}
+
+/// task exits and submit an exit code
 pub fn sys_exit(exit_code: i32) -> ! {
     trace!("kernel:pid[{}] sys_exit", current_task().unwrap().pid.0);
     exit_current_and_run_next(exit_code);
@@ -118,40 +144,50 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
 pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    trace!("kernel:pid[{}] sys_get_time", current_task().unwrap().pid.0);
+    if _ts.is_null() {
+        return -1;
+    }
+    let time_us = get_time_us();
+
+
+    let time_val = TimeVal {
+        sec: time_us / 1_000_000,
+        usec: time_us % 1_000_000,
+    };
+
+    copy_to_cur_user(&time_val, _ts);
+    0
 }
 
 /// YOUR JOB: Finish sys_task_info to pass testcases
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TaskInfo`] is splitted by two pages ?
 pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_task_info NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    trace!("kernel:pid[{}] sys_task_info", current_task().unwrap().pid.0);
+    if let Some(task) = current_task() {
+        let task_info = TaskInfo::from_task_ref(&task);
+
+        copy_to_cur_user(&task_info, _ti);
+
+        0
+    } else { -1 }
 }
 
 /// YOUR JOB: Implement mmap.
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    trace!("kernel:pid[{}] sys_mmap", current_task().unwrap().pid.0);
+    if let Some(task) = current_task() {
+        task.inner_exclusive_access().mmap(_start, _len, _port)
+    } else { -1 }
 }
 
 /// YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    trace!("kernel:pid[{}] sys_munmap", current_task().unwrap().pid.0);
+    if let Some(task) = current_task() {
+        task.inner_exclusive_access().munmap(_start, _len)
+    } else { -1 }
 }
 
 /// change data segment size
@@ -167,18 +203,46 @@ pub fn sys_sbrk(size: i32) -> isize {
 /// YOUR JOB: Implement spawn.
 /// HINT: fork + exec =/= spawn
 pub fn sys_spawn(_path: *const u8) -> isize {
+    let path = translated_str(current_user_token(), _path);
+    let task = current_task().unwrap();
+
     trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
+        "kernel:pid[{}] sys_spawn {}",
+        task.pid.0,
+        path
     );
-    -1
+    let path = translated_str(current_user_token(), _path);
+    if let Some(app_inode) = open_file(path.as_str(), OpenFlags::RDONLY)
+    {
+        let app_data = app_inode.read_all();
+        let new_task = TaskControlBlock::spawn(&task, &app_data[..]);
+
+
+        let new_pid = new_task.pid.0;
+        new_task.inner_exclusive_access().get_trap_cx().x[10] = 0;
+        task.inner_exclusive_access().get_trap_cx().x[10] = new_pid;
+
+        add_task(new_task);
+        new_pid as isize
+    } else {
+        error!("spawn: app {} not found!", path);
+        -1
+    }
 }
 
 // YOUR JOB: Set task priority.
 pub fn sys_set_priority(_prio: isize) -> isize {
+    let task = current_task().unwrap();
     trace!(
-        "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
+        "kernel:pid[{}] sys_set_priority",
+        task.pid.0
+
     );
-    -1
+
+    if _prio < 2 {
+        return -1;
+    }
+
+    task.inner_exclusive_access().set_priority(_prio);
+    _prio
 }

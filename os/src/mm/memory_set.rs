@@ -78,9 +78,25 @@ impl MemorySet {
             self.areas.remove(idx);
         }
     }
-    /// Add a new MapArea into this MemorySet.
-    /// Assuming that there are no conflicts in the virtual address
-    /// space.
+    /// clean the mapping of the given range
+    pub fn cleanse_framed_area(&mut self, start_va: VirtAddr, end_va: VirtAddr) {
+        if let Some(tgt_ind) = self.areas.iter().position(|area|
+            area.vpn_range.get_start() == start_va.floor() && area.vpn_range.get_end() == end_va.ceil()) {
+            self.areas.get_mut(tgt_ind).unwrap().unmap(&mut self.page_table);
+            self.areas.remove(tgt_ind);
+        }
+    }
+    /// 在内存管理器中添加一个新的映射区域
+    ///
+    /// # Parameters
+    ///
+    /// - `map_area`: 一个 `MapArea` 实例，表示要映射的内存区域
+    /// - `data`: 一个可选的字节切片引用，如果提供，则用于初始化映射区域的数据
+    ///
+    /// # Description
+    ///
+    /// 此函数首先将给定的 `map_area` 映射到内存管理器的页表中，然后根据 `data` 参数的有无决定是否将数据复制到新映射的区域中
+    /// 最后，将 `map_area` 添加到内存管理器维护的映射区域列表中
     fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
         map_area.map(&mut self.page_table);
         if let Some(data) = data {
@@ -163,8 +179,8 @@ impl MemorySet {
         for pair in MMIO {
             memory_set.push(
                 MapArea::new(
-                    (*pair).0.into(),
-                    ((*pair).0 + (*pair).1).into(),
+                    pair.0.into(),
+                    (pair.0 + pair.1).into(),
                     MapType::Identical,
                     MapPermission::R | MapPermission::W,
                 ),
@@ -318,6 +334,41 @@ impl MemorySet {
             false
         }
     }
+
+    /// Check if the given virtual address range conflicts with any existing areas
+    pub fn conflict_with(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> bool {
+        self.areas.iter().any(|area| {
+            let vpnrange = VPNRange::new(start_vpn, end_vpn);
+            let ret = area.vpn_range.intersect(&vpnrange);
+            if ret {
+                error!("conflict={ret}: tgt[{:x},{:x}) and exist[{:x},{:x})", vpnrange.get_start().0,vpnrange.get_end().0, area.vpn_range.get_start().0, area.vpn_range.get_end().0);
+            }
+
+
+            ret
+        })
+    }
+
+    /// Check if the given virtual page is free and not mapped yet
+    pub fn is_free_page(&self, vpn: VirtPageNum) -> bool {
+        !self.areas.iter().any(|area| {
+            area.vpn_range.contains(vpn)
+        })
+    }
+    /// Check if the given virtual address range is valid
+    pub fn validate_vpnrange(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> bool {
+        assert!(start_vpn.0 <= end_vpn.0, "start_vpn:{} > end_vpn:{}", start_vpn.0, end_vpn.0);
+        VPNRange::new(start_vpn, end_vpn)
+            .into_iter()
+            .all(|vpn| {
+                if let Some(pte) = self.translate(vpn)
+                {
+                    pte.is_valid()
+                } else {
+                    false
+                }
+            })
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
@@ -440,7 +491,14 @@ bitflags! {
         const U = 1 << 4;
     }
 }
-
+impl MapPermission {
+    /// Convert from port to permission bits.
+    pub fn from_port(port: usize) -> Option<Self> {
+        if 0 < port && port <= 0b111 {
+            MapPermission::from_bits((port as u8) << 1)
+        } else { None }
+    }
+}
 /// remap test in kernel space
 #[allow(unused)]
 pub fn remap_test() {

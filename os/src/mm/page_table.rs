@@ -1,5 +1,6 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
 use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
+use crate::task::current_user_token;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -146,7 +147,9 @@ impl PageTable {
     /// get the physical address from the virtual address
     pub fn translate_va(&self, va: VirtAddr) -> Option<PhysAddr> {
         self.find_pte(va.clone().floor()).map(|pte| {
+            //println!("translate_va:va = {:?}", va);
             let aligned_pa: PhysAddr = pte.ppn().into();
+            //println!("translate_va:pa_align = {:?}", aligned_pa);
             let offset = va.page_offset();
             let aligned_pa_usize: usize = aligned_pa.into();
             (aligned_pa_usize + offset).into()
@@ -193,9 +196,10 @@ pub fn translated_str(token: usize, ptr: *const u8) -> String {
             .get_mut());
         if ch == 0 {
             break;
+        } else {
+            string.push(ch as char);
+            va += 1;
         }
-        string.push(ch as char);
-        va += 1;
     }
     string
 }
@@ -218,7 +222,31 @@ pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
         .unwrap()
         .get_mut()
 }
+/// copy a value from kernel space to user space
+#[allow(unused)]
+pub fn copy_to_cur_user<T>(src: &T, dst: *mut T)
+where
+    T: Copy + 'static,
+{
+    let token = current_user_token();
+    let dst_refmut = translated_refmut::<T>(token, dst);
 
+    *dst_refmut = *src
+}
+
+/// copy a value from user space to kernel space
+#[allow(unused)]
+pub fn copy_from_user<T>(src: usize, dst: &mut T) -> bool
+where
+
+    T: Copy + 'static,
+{
+    let token = current_user_token();
+    let src_refmut = translated_refmut::<T>(token, src as *mut T);
+
+    *dst = *src_refmut;
+    true
+}
 /// An abstraction over a buffer passed from user space to kernel space
 pub struct UserBuffer {
     /// A list of buffers
