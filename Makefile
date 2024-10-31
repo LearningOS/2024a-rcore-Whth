@@ -13,7 +13,10 @@ fmt:
 
 report:
 	mkdir -p reports
-	echo "# report" > "reports/lab$(ID).md"
+	for i in $(shell seq 1 $(ID)); do \
+		F_NAME=reports/lab$$i.md; \
+		echo "## lab$$i" >> "$$F_NAME"; \
+	done
 
 clean:
 	rm -rf user ci-user
