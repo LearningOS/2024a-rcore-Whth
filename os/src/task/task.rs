@@ -168,7 +168,9 @@ impl TaskControlBlockInner {
 
 
     pub fn update_stride(&mut self) {
-        self.stride.update((self.stride.0 + INIT_STRIDE * self.priority as u64) % (BIG_STRIDE + 1))
+        let n_s = (self.stride.0 + INIT_STRIDE * self.priority as u64) % (BIG_STRIDE + 1);
+        debug!("update stride: {}", n_s);
+        self.stride.update(n_s)
     }
 }
 
@@ -249,6 +251,57 @@ impl TaskControlBlock {
             trap_handler as usize,
         );
         // **** release inner automatically
+    }
+    /// Spawn a child process from current process
+    pub fn spawn(self: &Arc<Self>, elf_data: &[u8]) -> Arc<Self> {
+        let mut parent_inner = self.inner_exclusive_access();
+        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
+
+        let trap_cx_ppn = memory_set
+            .translate(VirtAddr::from(TRAP_CONTEXT_BASE).into())
+            .unwrap()
+            .ppn();
+
+        // alloc a pid and a kernel stack in kernel space
+        let pid_handle = pid_alloc();
+        let kernel_stack = kstack_alloc();
+        let kernel_stack_top = kernel_stack.get_top();
+        let task_control_block = Arc::new(Self {
+            pid: pid_handle,
+            kernel_stack,
+            inner: unsafe {
+                UPSafeCell::new(TaskControlBlockInner {
+                    trap_cx_ppn,
+                    base_size: user_sp,
+                    task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+                    task_status: TaskStatus::Ready,
+                    memory_set,
+                    parent: Some(Arc::downgrade(self)),
+                    children: Vec::new(),
+                    exit_code: 0,
+                    heap_bottom: user_sp,
+                    program_brk: user_sp,
+                    sys_call_times: [0; MAX_SYSCALL_NUM],
+                    start_time: get_time_ms(),
+                    priority: parent_inner.priority,
+                    stride: parent_inner.stride,
+                })
+            },
+        });
+        // add child
+        parent_inner.children.push(task_control_block.clone());
+        // modify kernel_sp in trap_cx
+        // **** access child PCB exclusively
+        let trap_cx = task_control_block.inner_exclusive_access().get_trap_cx();
+        *trap_cx = TrapContext::app_init_context(
+            entry_point,
+            user_sp,
+            KERNEL_SPACE.exclusive_access().token(),
+            kernel_stack_top,
+            trap_handler as usize,
+        );
+        // return
+        task_control_block
     }
 
     /// parent process fork the child process

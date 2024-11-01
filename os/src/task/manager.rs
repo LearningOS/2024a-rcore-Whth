@@ -26,6 +26,7 @@ impl TaskManager {
     }
     /// Add process back to ready queue
     pub fn add(&mut self, task: Arc<TaskControlBlock>) {
+        debug!("add task: pid={}",task.pid.0);
         self.ready_queue.push(task);
     }
     /// Take a process out of the ready queue

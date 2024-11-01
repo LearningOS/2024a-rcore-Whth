@@ -213,7 +213,7 @@ pub fn sys_spawn(_path: *const u8) -> isize {
 
     if let Some(app_data) = get_app_data_by_name(path.as_str())
     {
-        let new_task = Arc::new(TaskControlBlock::new(app_data));
+        let new_task = TaskControlBlock::spawn(&task, app_data);
 
 
         let new_pid = new_task.pid.0;
