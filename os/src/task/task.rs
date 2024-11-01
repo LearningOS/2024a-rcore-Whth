@@ -1,7 +1,7 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
+use crate::config::{BIG_STRIDE, DEFAULT_PRIORITY, INIT_STRIDE, MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
 use crate::mm::{MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
 use crate::timer::get_time_ms;
@@ -9,6 +9,7 @@ use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::cell::RefMut;
+use core::cmp::Ordering;
 
 /// Task control block structure
 ///
@@ -36,6 +37,9 @@ impl TaskControlBlock {
         inner.memory_set.token()
     }
 }
+
+//在运行过程中可能发生变化的则放在 TaskControlBlockInner 中，将它再包裹上一层 UPSafeCell<T> 放在任务控制块中。
+// 在此使用 UPSafeCell<T> 可以提供互斥从而避免数据竞争。
 
 pub struct TaskControlBlockInner {
     /// The physical page number of the frame where the trap context is placed
@@ -75,6 +79,12 @@ pub struct TaskControlBlockInner {
 
     /// The start time of the task
     pub start_time: usize,
+
+    /// Priority
+    pub priority: isize,
+
+    /// stride algorithm
+    pub stride: Stride,
 }
 
 impl TaskControlBlockInner {
@@ -142,6 +152,24 @@ impl TaskControlBlockInner {
     pub fn get_syscall_times(&self) -> &[u32; MAX_SYSCALL_NUM] {
         &self.sys_call_times
     }
+
+    pub fn get_priority(&self) -> isize {
+        self.priority
+    }
+
+    pub fn set_priority(&mut self, priority: isize) {
+        self.priority = priority;
+    }
+
+
+    pub fn get_stride(&self) -> Stride {
+        self.stride
+    }
+
+
+    pub fn update_stride(&mut self) {
+        self.stride.update((self.stride.0 + INIT_STRIDE * self.priority as u64) % (BIG_STRIDE + 1))
+    }
 }
 
 impl TaskControlBlock {
@@ -177,6 +205,8 @@ impl TaskControlBlock {
                     program_brk: user_sp,
                     sys_call_times: [0; MAX_SYSCALL_NUM],
                     start_time: get_time_ms(),
+                    priority: DEFAULT_PRIORITY,
+                    stride: Stride::default(),
                 })
             },
         };
@@ -252,6 +282,8 @@ impl TaskControlBlock {
                     program_brk: parent_inner.program_brk,
                     sys_call_times: [0; MAX_SYSCALL_NUM],
                     start_time: get_time_ms(),
+                    priority: parent_inner.priority,
+                    stride: parent_inner.stride,
                 })
             },
         });
@@ -311,3 +343,56 @@ pub enum TaskStatus {
     /// exited
     Zombie,
 }
+
+
+#[derive(Copy, Clone, Default)]
+pub struct Stride(u64);
+
+
+impl Stride {
+    pub fn new(stride: usize)
+               -> Self {
+        Stride(stride as u64)
+    }
+
+    pub fn update(&mut self, stride: u64) {
+        self.0 = stride;
+    }
+}
+
+
+impl Ord for Stride {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.partial_cmp(other).unwrap()
+    }
+}
+impl Eq for Stride {}
+impl PartialOrd for Stride {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+}
+
+impl PartialEq for Stride {
+    fn eq(&self, _other: &Self) -> bool {
+        false
+    }
+}
+
+
+impl Ord for TaskControlBlock {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.partial_cmp(other).unwrap()
+    }
+}
+impl Eq for TaskControlBlock {}
+impl PartialOrd for TaskControlBlock {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(other.cmp(self)) }
+}
+
+impl PartialEq for TaskControlBlock {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner_exclusive_access().get_stride().eq(
+            &other.inner_exclusive_access().get_stride()
+        )
+    }
+}
+

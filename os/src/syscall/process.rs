@@ -203,10 +203,11 @@ pub fn sys_sbrk(size: i32) -> isize {
 /// HINT: fork + exec =/= spawn
 pub fn sys_spawn(_path: *const u8) -> isize {
     let path = translated_str(current_user_token(), _path);
+    let task = current_task().unwrap();
 
     trace!(
         "kernel:pid[{}] sys_spawn {}",
-        current_task().unwrap().pid.0,
+        task.pid.0,
         path
     );
 
@@ -217,7 +218,7 @@ pub fn sys_spawn(_path: *const u8) -> isize {
 
         let new_pid = new_task.pid.0;
         new_task.inner_exclusive_access().get_trap_cx().x[10] = 0;
-        current_task().unwrap().inner_exclusive_access().get_trap_cx().x[10] = new_pid;
+        task.inner_exclusive_access().get_trap_cx().x[10] = new_pid;
 
         add_task(new_task);
         new_pid as isize
@@ -227,11 +228,25 @@ pub fn sys_spawn(_path: *const u8) -> isize {
     }
 }
 
+
+// syscall ID：140
+// 设置当前进程优先级为 prio
+// 参数：prio 进程优先级，要求 prio >= 2
+// 返回值：如果输入合法则返回 prio，否则返回 -1
+
 // YOUR JOB: Set task priority.
 pub fn sys_set_priority(_prio: isize) -> isize {
+    let task = current_task().unwrap();
     trace!(
-        "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
+        "kernel:pid[{}] sys_set_priority",
+        task.pid.0
+
     );
-    -1
+
+    if _prio < 2 {
+        return -1;
+    }
+
+    task.inner_exclusive_access().set_priority(_prio);
+    _prio
 }
