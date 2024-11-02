@@ -29,8 +29,7 @@ pub const MMIO: &[(usize, usize)] = &[(0x10001000, 0x1000)];
 /// the max number of tasks
 pub const BIG_STRIDE: u64 = 255;
 
-/// initial stride
-pub const INIT_STRIDE: u64 = 1;
+
 /// default priority
 pub const DEFAULT_PRIORITY: isize = 16;
 

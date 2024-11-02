@@ -1,7 +1,7 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::{BIG_STRIDE, DEFAULT_PRIORITY, INIT_STRIDE, MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
+use crate::config::{BIG_STRIDE, DEFAULT_PRIORITY, MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
 use crate::fs::{File, Stdin, Stdout};
 use crate::mm::{MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
@@ -174,7 +174,7 @@ impl TaskControlBlockInner {
 
 
     pub fn update_stride(&mut self) {
-        let n_s = (self.stride.0 + INIT_STRIDE * self.priority as u64) % (BIG_STRIDE + 1);
+        let n_s = (self.stride.0 + (BIG_STRIDE / self.priority as u64)) % (BIG_STRIDE + 1);
         debug!("update stride: {}", n_s);
         self.stride.update(n_s)
     }
