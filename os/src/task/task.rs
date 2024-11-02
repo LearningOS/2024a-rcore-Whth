@@ -416,12 +416,19 @@ impl Stride {
 
 impl Ord for Stride {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.partial_cmp(other).unwrap()
+        let diff = (self.0 - other.0 + BIG_STRIDE) % BIG_STRIDE;
+        if diff <= BIG_STRIDE / 2 {
+            Ordering::Greater
+        } else {
+            Ordering::Less
+        }
     }
 }
 impl Eq for Stride {}
 impl PartialOrd for Stride {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl PartialEq for Stride {
@@ -433,7 +440,9 @@ impl PartialEq for Stride {
 
 impl Ord for TaskControlBlock {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.partial_cmp(other).unwrap()
+        self.inner_exclusive_access().get_stride().cmp(
+            &other.inner_exclusive_access().get_stride()
+        )
     }
 }
 impl Eq for TaskControlBlock {}
