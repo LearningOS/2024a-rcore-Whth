@@ -4,7 +4,7 @@
 //!
 //! `UPSafeCell<OSInodeInner>` -> `OSInode`: for static `ROOT_INODE`,we
 //! need to wrap `OSInodeInner` into `UPSafeCell`
-use super::File;
+use super::{File, Stat, StatMode};
 use crate::drivers::BLOCK_DEVICE;
 use crate::mm::UserBuffer;
 use crate::sync::UPSafeCell;
@@ -51,6 +51,26 @@ impl OSInode {
             v.extend_from_slice(&buffer[..len]);
         }
         v
+    }
+
+    pub fn stat(&self) -> Stat {
+        let inner = self.inner.exclusive_access();
+        Stat {
+            dev: inner.inode.drive_id(),
+            ino: inner.inode.ino_id(),
+            nlink: inner.inode.ref_count(),
+            pad: [0u64; 7],
+            mode: {
+                let mut m = StatMode::empty();
+                match &inner.inode {
+                    file_ino if file_ino.is_file() => m.insert(StatMode::FILE),
+                    dir_ino if dir_ino.is_dir() => m.insert(StatMode::DIR),
+                    _ => m.insert(StatMode::NULL)
+                }
+                m
+            },
+
+        }
     }
 }
 
@@ -124,6 +144,16 @@ pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
     }
 }
 
+/// Create a hard link
+pub fn make_link(link_name: &str, target: &str) -> bool {
+    ROOT_INODE.create_hard_link(link_name, target)
+}
+
+
+/// Remove a link
+pub fn remove_link(link_name: &str) -> bool {
+    ROOT_INODE.drop_hard_unlink(link_name)
+}
 impl File for OSInode {
     fn readable(&self) -> bool {
         self.readable
@@ -135,7 +165,7 @@ impl File for OSInode {
         let mut inner = self.inner.exclusive_access();
         let mut total_read_size = 0usize;
         for slice in buf.buffers.iter_mut() {
-            let read_size = inner.inode.read_at(inner.offset, *slice);
+            let read_size = inner.inode.read_at(inner.offset, slice);
             if read_size == 0 {
                 break;
             }
@@ -148,11 +178,15 @@ impl File for OSInode {
         let mut inner = self.inner.exclusive_access();
         let mut total_write_size = 0usize;
         for slice in buf.buffers.iter() {
-            let write_size = inner.inode.write_at(inner.offset, *slice);
+            let write_size = inner.inode.write_at(inner.offset, slice);
             assert_eq!(write_size, slice.len());
             inner.offset += write_size;
             total_write_size += write_size;
         }
         total_write_size
+    }
+
+    fn stat(&self) -> Stat {
+        self.stat()
     }
 }
