@@ -85,10 +85,31 @@ pub struct DiskInode {
     pub direct: [u32; INODE_DIRECT_COUNT],
     pub indirect1: u32,
     pub indirect2: u32,
+    ref_count: u32,
     type_: DiskInodeType,
 }
 
 impl DiskInode {
+    /// Increase reference count
+    pub fn add_ref_count(&mut self) {
+        self.ref_count += 1;
+    }
+
+    /// Get reference count
+    pub fn ref_count(&self) -> u32 {
+        self.ref_count
+    }
+
+    /// Decrease reference count
+    pub fn sub_ref_count(&mut self) {
+        self.ref_count -= 1;
+    }
+
+    /// Whether this inode is isolated
+    pub fn is_isolated(&self) -> bool {
+        self.ref_count == 0
+    }
+
     /// Initialize a disk inode, as well as all direct inodes under it
     /// indirect1 and indirect2 block are allocated only when they are needed
     pub fn initialize(&mut self, type_: DiskInodeType) {
@@ -333,11 +354,11 @@ impl DiskInode {
                 self.get_block_id(start_block as u32, block_device) as usize,
                 Arc::clone(block_device),
             )
-            .lock()
-            .read(0, |data_block: &DataBlock| {
-                let src = &data_block[start % BLOCK_SZ..start % BLOCK_SZ + block_read_size];
-                dst.copy_from_slice(src);
-            });
+                .lock()
+                .read(0, |data_block: &DataBlock| {
+                    let src = &data_block[start % BLOCK_SZ..start % BLOCK_SZ + block_read_size];
+                    dst.copy_from_slice(src);
+                });
             read_size += block_read_size;
             // move to next block
             if end_current_block == end {
@@ -371,12 +392,12 @@ impl DiskInode {
                 self.get_block_id(start_block as u32, block_device) as usize,
                 Arc::clone(block_device),
             )
-            .lock()
-            .modify(0, |data_block: &mut DataBlock| {
-                let src = &buf[write_size..write_size + block_write_size];
-                let dst = &mut data_block[start % BLOCK_SZ..start % BLOCK_SZ + block_write_size];
-                dst.copy_from_slice(src);
-            });
+                .lock()
+                .modify(0, |data_block: &mut DataBlock| {
+                    let src = &buf[write_size..write_size + block_write_size];
+                    let dst = &mut data_block[start % BLOCK_SZ..start % BLOCK_SZ + block_write_size];
+                    dst.copy_from_slice(src);
+                });
             write_size += block_write_size;
             // move to next block
             if end_current_block == end {
