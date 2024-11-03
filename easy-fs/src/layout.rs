@@ -110,6 +110,10 @@ impl DiskInode {
         self.ref_count == 0
     }
 
+    pub fn file_count(&self) -> usize {
+        self.size as usize / DIRENT_SZ
+    }
+
     /// Initialize a disk inode, as well as all direct inodes under it
     /// indirect1 and indirect2 block are allocated only when they are needed
     pub fn initialize(&mut self, type_: DiskInodeType) {
@@ -329,7 +333,7 @@ impl DiskInode {
         self.indirect2 = 0;
         v
     }
-    /// Read data from current disk inode
+    /// Read data from current disk inode and return the length of data read.
     pub fn read_at(
         &self,
         offset: usize,
@@ -407,6 +411,28 @@ impl DiskInode {
             start = end_current_block;
         }
         write_size
+    }
+
+
+    pub fn entries(&self, block_device: &Arc<dyn BlockDevice>) -> Vec<DirEntry> {
+        (0..self.file_count()).map(
+            |i| {
+                let mut entry = DirEntry::empty();
+                self.read_at(i * DIRENT_SZ, entry.as_bytes_mut(), block_device);
+                entry
+            }
+        )
+            .collect()
+    }
+    pub fn drop_entry(&mut self, entry_id: usize, block_device: &Arc<dyn BlockDevice>) -> Option<DirEntry> {
+        if entry_id < self.entries(&block_device).len() {
+            let mut entry = DirEntry::empty();
+            self.read_at(entry_id * DIRENT_SZ, entry.as_bytes_mut(), block_device);
+            self.write_at(entry_id * DIRENT_SZ, &DirEntry::empty().as_bytes(), block_device);
+            Some(entry)
+        } else {
+            None
+        }
     }
 }
 /// A directory entry
