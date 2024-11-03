@@ -1,9 +1,10 @@
 use super::{
     block_cache_sync_all, get_block_cache, BlockDevice, DirEntry, DiskInode, DiskInodeType,
-    EasyFileSystem, DIRENT_SZ,
+    EasyFileSystem, DIRENT_SZ, REF_COUNT_SZ,
 };
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::sync::Arc;
+use alloc::vec;
 use alloc::vec::Vec;
 use log::error;
 use spin::{Mutex, MutexGuard};
@@ -35,7 +36,7 @@ impl Inode {
     /// Get the size of inode
 
     pub fn ref_count(&self) -> u32 {
-        self.read_disk_inode(|inode| inode.ref_count())
+        self.read_disk_inode(|inode| inode.ref_count(&self.block_device))
     }
 
 
@@ -74,18 +75,13 @@ impl Inode {
     fn find_inode_id(&self, name: &str, disk_inode: &DiskInode) -> Option<u32> {
         // assert it is a directory
         assert!(disk_inode.is_dir());
-        let file_count = (disk_inode.size as usize) / DIRENT_SZ;
-        let mut dirent = DirEntry::empty();
-        for i in 0..file_count {
-            assert_eq!(
-                disk_inode.read_at(DIRENT_SZ * i, dirent.as_bytes_mut(), &self.block_device,),
-                DIRENT_SZ,
-            );
-            if dirent.name() == name {
-                return Some(dirent.inode_id() as u32);
+        disk_inode.entries(&self.block_device).iter().find_map(|entry| {
+            if entry.name() == name {
+                Some(entry.inode_id())
+            } else {
+                None
             }
-        }
-        None
+        })
     }
     /// Find inode under current inode by name
     pub fn find(&self, name: &str) -> Option<Arc<Inode>> {
@@ -133,7 +129,7 @@ impl Inode {
             return None;
         }
         // create a new file
-        // alloc a inode with an indirect block
+        // alloc an inode with an indirect block
         let new_inode_id = fs.alloc_inode();
         // initialize inode
         let (new_inode_block_id, new_inode_block_offset) = fs.get_disk_inode_pos(new_inode_id);
@@ -141,23 +137,26 @@ impl Inode {
             .lock()
             .modify(new_inode_block_offset, |new_inode: &mut DiskInode| {
                 new_inode.initialize(DiskInodeType::File);
+                new_inode.increase_size(REF_COUNT_SZ as u32, vec![fs.alloc_data()], &self.block_device)
             });
         self.modify_disk_inode(|root_inode| {
             // append file in the dirent
             let file_count = (root_inode.size as usize) / DIRENT_SZ;
-            let new_size = (file_count + 1) * DIRENT_SZ;
+            let new_size = REF_COUNT_SZ + (file_count + 1) * DIRENT_SZ;
             // increase size
             self.increase_size(new_size as u32, root_inode, &mut fs);
             // write dirent
             let dirent = DirEntry::new(name, new_inode_id);
             root_inode.write_at(
-                file_count * DIRENT_SZ,
+                REF_COUNT_SZ + file_count * DIRENT_SZ,
                 dirent.as_bytes(),
                 &self.block_device,
             );
+            root_inode.add_ref_count(&self.block_device)
         });
 
         let (block_id, block_offset) = fs.get_disk_inode_pos(new_inode_id);
+
         block_cache_sync_all();
         // return inode
         Some(Arc::new(Self::new(
@@ -177,7 +176,7 @@ impl Inode {
             src_inode.modify_disk_inode(|src_dinode|
                 {
                     // increase ref count
-                    src_dinode.add_ref_count();
+                    src_dinode.add_ref_count(&self.block_device);
                 });
 
 
@@ -186,13 +185,13 @@ impl Inode {
 
                 // append file in the dirent
                 let file_count = (root_dinode.size as usize) / DIRENT_SZ;
-                let new_size = (file_count + 1) * DIRENT_SZ;
+                let new_size = REF_COUNT_SZ + (file_count + 1) * DIRENT_SZ;
                 // increase size
                 self.increase_size(new_size as u32, root_dinode, &mut fs);
                 // write dirent
                 let dirent = link_entry;
                 root_dinode.write_at(
-                    file_count * DIRENT_SZ,
+                    REF_COUNT_SZ + file_count * DIRENT_SZ,
                     dirent.as_bytes(),
                     &self.block_device,
                 );
@@ -212,13 +211,14 @@ impl Inode {
             if tgt_inode.modify_disk_inode(|tgt_dinode|
                 {
                     // decrease ref count
-                    tgt_dinode.sub_ref_count();
-                    tgt_dinode.is_isolated()
+                    tgt_dinode.sub_ref_count(&self.block_device);
+                    tgt_dinode.is_isolated(&self.block_device)
                 }) {
                 tgt_inode.clear();
             }
 
 
+            block_cache_sync_all();
             self.drop_direntry(name)
         } else { false }
     }
@@ -249,17 +249,11 @@ impl Inode {
     pub fn ls(&self) -> Vec<String> {
         let _fs = self.fs.lock();
         self.read_disk_inode(|disk_inode| {
-            let file_count = (disk_inode.size as usize) / DIRENT_SZ;
-            let mut v: Vec<String> = Vec::new();
-            for i in 0..file_count {
-                let mut dirent = DirEntry::empty();
-                assert_eq!(
-                    disk_inode.read_at(i * DIRENT_SZ, dirent.as_bytes_mut(), &self.block_device,),
-                    DIRENT_SZ,
-                );
-                v.push(String::from(dirent.name()));
-            }
-            v
+            disk_inode.entries(&self.block_device).iter().filter_map(|en| if en.name() == "" {
+                None
+            } else {
+                Some(en.name().to_string())
+            }).collect::<Vec<_>>()
         })
     }
     /// Read data from current inode
@@ -283,7 +277,7 @@ impl Inode {
     pub fn clear(&self) {
         let mut fs = self.fs.lock();
         self.modify_disk_inode(|disk_inode| {
-            assert!(disk_inode.is_isolated());
+            assert!(disk_inode.is_isolated(&self.block_device));
             let size = disk_inode.size;
             let data_blocks_dealloc = disk_inode.clear_size(&self.block_device);
             assert_eq!(data_blocks_dealloc.len(), DiskInode::total_blocks(size) as usize);

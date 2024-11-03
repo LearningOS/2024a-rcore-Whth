@@ -2,9 +2,12 @@ use super::{
     block_cache_sync_all, get_block_cache, Bitmap, BlockDevice, DiskInode, DiskInodeType, Inode,
     SuperBlock,
 };
+use crate::layout::REF_COUNT_SZ;
 use crate::BLOCK_SZ;
 use alloc::sync::Arc;
+use alloc::vec;
 use spin::Mutex;
+
 ///An easy file system on block
 pub struct EasyFileSystem {
     ///Real device
@@ -77,6 +80,7 @@ impl EasyFileSystem {
             .lock()
             .modify(root_inode_offset, |disk_inode: &mut DiskInode| {
                 disk_inode.initialize(DiskInodeType::Directory);
+                disk_inode.increase_size(REF_COUNT_SZ as u32, vec![efs.alloc_data()], &block_device)
             });
         block_cache_sync_all();
         Arc::new(Mutex::new(efs))

@@ -1,7 +1,9 @@
 use super::{get_block_cache, BlockDevice, BLOCK_SZ};
+use crate::block_cache::block_cache_sync_all;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::{Debug, Formatter, Result};
+use log::debug;
 
 /// Magic number for sanity check
 const EFS_MAGIC: u32 = 0x3b800001;
@@ -85,29 +87,44 @@ pub struct DiskInode {
     pub direct: [u32; INODE_DIRECT_COUNT],
     pub indirect1: u32,
     pub indirect2: u32,
-    ref_count: u32,
     type_: DiskInodeType,
 }
 
+pub const REF_COUNT_SZ: usize = 4;
+
 impl DiskInode {
     /// Increase reference count
-    pub fn add_ref_count(&mut self) {
-        self.ref_count += 1;
+    pub fn add_ref_count(&mut self, block_device: &Arc<dyn BlockDevice>) {
+        let refcount = self.ref_count(&block_device);
+        self.set_ref_count(refcount + 1, &block_device);
+        debug!("add ref count 1 get {}", refcount);
     }
 
     /// Get reference count
-    pub fn ref_count(&self) -> u32 {
-        self.ref_count
+    pub fn ref_count(&self, block_device: &Arc<dyn BlockDevice>) -> u32 {
+        let mut ref_count = [0u8; REF_COUNT_SZ];
+        self.read_at(0, &mut ref_count, &block_device);
+
+        unsafe {
+            *(ref_count.as_ptr() as *const u32)
+        }
+    }
+
+    fn set_ref_count(&mut self, ref_count: u32, block_device: &Arc<dyn BlockDevice>) {
+        self.write_at(0, &ref_count.to_be_bytes(), &block_device);
+        block_cache_sync_all();
     }
 
     /// Decrease reference count
-    pub fn sub_ref_count(&mut self) {
-        self.ref_count -= 1;
+    pub fn sub_ref_count(&mut self, block_device: &Arc<dyn BlockDevice>) {
+        let refcount = self.ref_count(&block_device);
+        self.set_ref_count(refcount - 1, &block_device);
+        debug!("sub ref count 1 get {}", refcount);
     }
 
     /// Whether this inode is isolated
-    pub fn is_isolated(&self) -> bool {
-        self.ref_count == 0
+    pub fn is_isolated(&self, block_device: &Arc<dyn BlockDevice>) -> bool {
+        self.ref_count(&block_device) == 0
     }
 
     pub fn file_count(&self) -> usize {
@@ -418,7 +435,7 @@ impl DiskInode {
         (0..self.file_count()).map(
             |i| {
                 let mut entry = DirEntry::empty();
-                self.read_at(i * DIRENT_SZ, entry.as_bytes_mut(), block_device);
+                self.read_at(REF_COUNT_SZ + i * DIRENT_SZ, entry.as_bytes_mut(), block_device);
                 entry
             }
         )
@@ -427,8 +444,9 @@ impl DiskInode {
     pub fn drop_entry(&mut self, entry_id: usize, block_device: &Arc<dyn BlockDevice>) -> Option<DirEntry> {
         if entry_id < self.entries(&block_device).len() {
             let mut entry = DirEntry::empty();
-            self.read_at(entry_id * DIRENT_SZ, entry.as_bytes_mut(), block_device);
-            self.write_at(entry_id * DIRENT_SZ, &DirEntry::empty().as_bytes(), block_device);
+            let offset = REF_COUNT_SZ + entry_id * DIRENT_SZ;
+            self.read_at(offset, entry.as_bytes_mut(), block_device);
+            self.write_at(offset, &DirEntry::empty().as_bytes(), block_device);
             Some(entry)
         } else {
             None
