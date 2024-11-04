@@ -52,26 +52,6 @@ impl OSInode {
         }
         v
     }
-
-    pub fn stat(&self) -> Stat {
-        let inner = self.inner.exclusive_access();
-        Stat {
-            dev: inner.inode.drive_id(),
-            ino: inner.inode.ino_id(),
-            nlink: inner.inode.ref_count(),
-            pad: [0u64; 7],
-            mode: {
-                let mut m = StatMode::empty();
-                match &inner.inode {
-                    file_ino if file_ino.is_file() => m.insert(StatMode::FILE),
-                    dir_ino if dir_ino.is_dir() => m.insert(StatMode::DIR),
-                    _ => m.insert(StatMode::NULL)
-                }
-                m
-            },
-
-        }
-    }
 }
 
 lazy_static! {
@@ -144,16 +124,30 @@ pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
     }
 }
 
-/// Create a hard link
-pub fn make_link(link_name: &str, target: &str) -> bool {
-    ROOT_INODE.create_hard_link(link_name, target)
+
+/// Make a link
+pub fn make_link(name: &str, linkname: &str) -> bool {
+    if let Some(inode) = ROOT_INODE.find(name) {
+        ROOT_INODE.append_entry(linkname, inode.disk_inode_id());
+        inode.add_ref_count();
+        true
+    } else {
+        false
+    }
 }
 
 
 /// Remove a link
-pub fn remove_link(link_name: &str) -> bool {
-    ROOT_INODE.drop_hard_unlink(link_name)
+pub fn remove_link(name: &str) -> bool {
+    if let Some(inode) = ROOT_INODE.find(name) {
+        inode.sub_ref_count();
+        ROOT_INODE.remove_entry(name);
+        true
+    } else {
+        false
+    }
 }
+
 impl File for OSInode {
     fn readable(&self) -> bool {
         self.readable
@@ -165,7 +159,7 @@ impl File for OSInode {
         let mut inner = self.inner.exclusive_access();
         let mut total_read_size = 0usize;
         for slice in buf.buffers.iter_mut() {
-            let read_size = inner.inode.read_at(inner.offset, slice);
+            let read_size = inner.inode.read_at(inner.offset, *slice);
             if read_size == 0 {
                 break;
             }
@@ -178,7 +172,7 @@ impl File for OSInode {
         let mut inner = self.inner.exclusive_access();
         let mut total_write_size = 0usize;
         for slice in buf.buffers.iter() {
-            let write_size = inner.inode.write_at(inner.offset, slice);
+            let write_size = inner.inode.write_at(inner.offset, *slice);
             assert_eq!(write_size, slice.len());
             inner.offset += write_size;
             total_write_size += write_size;
@@ -187,6 +181,20 @@ impl File for OSInode {
     }
 
     fn stat(&self) -> Stat {
-        self.stat()
+        let inode = self.inner.exclusive_access().inode.clone();
+        Stat {
+            ino: inode.disk_inode_id() as u64,
+            nlink: inode.disk_inode_ref_count(),
+            mode: {
+                if inode.is_dir() {
+                    StatMode::DIR
+                } else if inode.is_file() {
+                    StatMode::FILE
+                } else {
+                    StatMode::NULL
+                }
+            },
+            ..Stat::default()
+        }
     }
 }

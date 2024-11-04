@@ -1,9 +1,7 @@
 use super::{get_block_cache, BlockDevice, BLOCK_SZ};
-use crate::block_cache::block_cache_sync_all;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::{Debug, Formatter, Result};
-use log::debug;
 
 /// Magic number for sanity check
 const EFS_MAGIC: u32 = 0x3b800001;
@@ -87,58 +85,40 @@ pub struct DiskInode {
     pub direct: [u32; INODE_DIRECT_COUNT],
     pub indirect1: u32,
     pub indirect2: u32,
+    ref_count: u32,
+    ino_id: u32,
     type_: DiskInodeType,
 }
 
-pub const REF_COUNT_LABEL: &str = "aaaaaaaaaaaaaaaaaaaa";
-
-
 impl DiskInode {
-    /// Increase reference count
-    pub fn add_ref_count(&mut self, block_device: &Arc<dyn BlockDevice>) {
-        let refcount = self.ref_count(&block_device);
-        self.set_ref_count(refcount + 1, &block_device);
-        debug!("add ref count 1 get {}", refcount);
+    /// Add a reference count
+    pub fn add_ref_count(&mut self) {
+        self.ref_count += 1;
     }
 
-    /// Get reference count
-    pub fn ref_count(&self, block_device: &Arc<dyn BlockDevice>) -> u32 {
-        if let Some(fi) = self.entries(&block_device).iter().find(
-            |&en| en.name() == REF_COUNT_LABEL,
-        ) {
-            fi.inode_id()
-        } else {
-            0
-        }
+
+    /// Subtract a reference count
+    pub fn sub_ref_count(&mut self) {
+        self.ref_count -= 1;
     }
 
-    fn set_ref_count(&mut self, ref_count: u32, block_device: &Arc<dyn BlockDevice>) {
-        if let Some((en_idx, entry)) = self.entries(&block_device).iter().enumerate().find(
-            |(i, en)| en.name() == REF_COUNT_LABEL
-        ) {
-            self.write_at(en_idx * DIRENT_SZ, DirEntry::new(entry.name(), ref_count).as_bytes(), &block_device);
-        } else {
-            let new_entry = DirEntry::new(REF_COUNT_LABEL, ref_count);
-            self.write_at(self.file_count() * DIRENT_SZ, new_entry.as_bytes(), &block_device);
-        }
-        block_cache_sync_all();
+    /// Get the reference count
+    pub fn ref_count(&self) -> u32 {
+        self.ref_count
     }
 
-    /// Decrease reference count
-    pub fn sub_ref_count(&mut self, block_device: &Arc<dyn BlockDevice>) {
-        let refcount = self.ref_count(&block_device);
-        self.set_ref_count(refcount - 1, &block_device);
-        debug!("sub ref count 1 get {}", refcount);
+    pub fn is_isolated(&self) -> bool {
+        self.ref_count == 0
+    }
+    /// Get the inode id
+    pub fn inode_id(&self) -> u32 {
+        self.ino_id
     }
 
-    /// Whether this inode is isolated
-    pub fn is_isolated(&self, block_device: &Arc<dyn BlockDevice>) -> bool {
-        self.ref_count(&block_device) == 0
+    pub fn set_inode_id(&mut self, ino_id: u32) {
+        self.ino_id = ino_id;
     }
 
-    pub fn file_count(&self) -> usize {
-        self.size as usize / DIRENT_SZ
-    }
 
     /// Initialize a disk inode, as well as all direct inodes under it
     /// indirect1 and indirect2 block are allocated only when they are needed
@@ -147,6 +127,8 @@ impl DiskInode {
         self.direct.iter_mut().for_each(|v| *v = 0);
         self.indirect1 = 0;
         self.indirect2 = 0;
+        self.ref_count = 1;
+        self.ino_id = 0;
         self.type_ = type_;
     }
     /// Whether this inode is a directory
@@ -161,6 +143,11 @@ impl DiskInode {
     /// Return block number correspond to size.
     pub fn data_blocks(&self) -> u32 {
         Self::_data_blocks(self.size)
+    }
+
+    pub fn file_count(&self) -> usize {
+        assert!(self.is_dir());
+        self.size as usize / DIRENT_SZ
     }
     fn _data_blocks(size: u32) -> u32 {
         (size + BLOCK_SZ as u32 - 1) / BLOCK_SZ as u32
@@ -441,6 +428,7 @@ impl DiskInode {
 
 
     pub fn entries(&self, block_device: &Arc<dyn BlockDevice>) -> Vec<DirEntry> {
+        assert!(self.is_dir());
         (0..self.file_count()).map(
             |i| {
                 let mut entry = DirEntry::empty();
@@ -449,16 +437,6 @@ impl DiskInode {
             }
         )
             .collect()
-    }
-    pub fn drop_entry(&mut self, entry_id: usize, block_device: &Arc<dyn BlockDevice>) -> Option<DirEntry> {
-        if entry_id < self.entries(&block_device).len() {
-            let mut entry = DirEntry::empty();
-            self.read_at(entry_id * DIRENT_SZ, entry.as_bytes_mut(), block_device);
-            self.write_at(entry_id * DIRENT_SZ, &DirEntry::empty().as_bytes(), block_device);
-            Some(entry)
-        } else {
-            None
-        }
     }
 }
 /// A directory entry
