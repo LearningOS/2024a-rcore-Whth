@@ -85,10 +85,41 @@ pub struct DiskInode {
     pub direct: [u32; INODE_DIRECT_COUNT],
     pub indirect1: u32,
     pub indirect2: u32,
+    ref_count: u32,
+    ino_id: u32,
     type_: DiskInodeType,
 }
 
 impl DiskInode {
+    /// Add a reference count
+    pub fn add_ref_count(&mut self) {
+        self.ref_count += 1;
+    }
+
+
+    /// Subtract a reference count
+    pub fn sub_ref_count(&mut self) {
+        self.ref_count -= 1;
+    }
+
+    /// Get the reference count
+    pub fn ref_count(&self) -> u32 {
+        self.ref_count
+    }
+
+    pub fn is_isolated(&self) -> bool {
+        self.ref_count == 0
+    }
+    /// Get the inode id
+    pub fn inode_id(&self) -> u32 {
+        self.ino_id
+    }
+
+    pub fn set_inode_id(&mut self, ino_id: u32) {
+        self.ino_id = ino_id;
+    }
+
+
     /// Initialize a disk inode, as well as all direct inodes under it
     /// indirect1 and indirect2 block are allocated only when they are needed
     pub fn initialize(&mut self, type_: DiskInodeType) {
@@ -96,6 +127,8 @@ impl DiskInode {
         self.direct.iter_mut().for_each(|v| *v = 0);
         self.indirect1 = 0;
         self.indirect2 = 0;
+        self.ref_count = 1;
+        self.ino_id = 0;
         self.type_ = type_;
     }
     /// Whether this inode is a directory
@@ -403,16 +436,6 @@ impl DiskInode {
             }
         )
             .collect()
-    }
-    pub fn drop_entry(&mut self, entry_id: usize, block_device: &Arc<dyn BlockDevice>) -> Option<DirEntry> {
-        if entry_id < self.entries(&block_device).len() {
-            let mut entry = DirEntry::empty();
-            self.read_at(entry_id * DIRENT_SZ, entry.as_bytes_mut(), block_device);
-            self.write_at(entry_id * DIRENT_SZ, &DirEntry::empty().as_bytes(), block_device);
-            Some(entry)
-        } else {
-            None
-        }
     }
 }
 /// A directory entry
