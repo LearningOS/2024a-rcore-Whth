@@ -428,6 +428,7 @@ impl DiskInode {
 
 
     pub fn entries(&self, block_device: &Arc<dyn BlockDevice>) -> Vec<DirEntry> {
+        assert!(self.is_dir());
         (0..self.file_count()).map(
             |i| {
                 let mut entry = DirEntry::empty();

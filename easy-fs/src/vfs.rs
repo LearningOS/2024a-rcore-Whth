@@ -127,6 +127,7 @@ impl Inode {
         disk_inode.increase_size(new_size, v, &self.block_device);
     }
 
+
     /// Create inode under current inode by name
     pub fn create(&self, name: &str) -> Option<Arc<Inode>> {
         let mut fs = self.fs.lock();
@@ -244,13 +245,27 @@ impl Inode {
 
     /// Remove a dirent from current inode
     pub fn remove_entry(&self, name: &str) {
+        assert!(self.is_dir());
         self.modify_disk_inode(|dinode| {
-            if let Some((i, entry)) = dinode.entries(&self.block_device).iter().enumerate().find(
-                |(i, en)| en.name() == name
+            if let Some(i) = dinode.entries(&self.block_device).iter().position(
+                |en| en.name() == name
             ) {
-                let override_entry = DirEntry::new("", entry.inode_id());
-                dinode.write_at(i * DIRENT_SZ, override_entry.as_bytes(), &self.block_device);
+                if i + 1 < dinode.file_count() {
+                    // remove the last entry
+
+                    // move all entries after the removed one to the left
+                    (i + 1..dinode.file_count())
+                        .for_each(|entry_index|
+                            {
+                                let mut entry_trunck = DirEntry::empty();
+                                dinode.read_at(entry_index * DIRENT_SZ, entry_trunck.as_bytes_mut(), &self.block_device);
+                                dinode.write_at(entry_index * DIRENT_SZ, DirEntry::empty().as_bytes(), &self.block_device);
+
+                                dinode.write_at((entry_index - 1) * DIRENT_SZ, entry_trunck.as_bytes(), &self.block_device);
+                            })
+                }
             }
+            dinode.size -= DIRENT_SZ as u32;
         });
         block_cache_sync_all();
     }
