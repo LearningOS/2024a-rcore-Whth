@@ -175,7 +175,6 @@ impl TaskControlBlockInner {
 
     pub fn update_stride(&mut self) {
         let n_s = (self.stride.0 + (BIG_STRIDE / self.priority as u64)) % (BIG_STRIDE + 1);
-        debug!("update stride: {}", n_s);
         self.stride.update(n_s)
     }
 }

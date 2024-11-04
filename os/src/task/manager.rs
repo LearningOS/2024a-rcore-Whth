@@ -25,14 +25,12 @@ impl TaskManager {
     }
     /// Add process back to ready queue
     pub fn add(&mut self, task: Arc<TaskControlBlock>) {
-        debug!("add task: pid={}",task.pid.0);
         self.ready_queue.push(task);
     }
     /// Take a process out of the ready queue
     pub fn fetch(&mut self) -> Option<Arc<TaskControlBlock>> {
         if let Some(task) = self.ready_queue.pop() {
             task.inner_exclusive_access().update_stride();
-            debug!("fetch task: pid={}",task.pid.0);
             Some(task)
         } else {
             None
