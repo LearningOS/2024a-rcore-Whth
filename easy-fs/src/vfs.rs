@@ -32,19 +32,16 @@ impl Inode {
 
     /// Clear the inode
 
-    pub fn add_ref_count(&self) {
+    pub fn add_ref_count(&self) -> &Self {
         self.modify_disk_inode(|inode| inode.add_ref_count());
-        block_cache_sync_all();
+        self
     }
 
     /// Decrease the ref count of the inode
 
-    pub fn sub_ref_count(&self) {
+    pub fn sub_ref_count(&self) -> &Self {
         self.modify_disk_inode(|inode| inode.sub_ref_count());
-        block_cache_sync_all();
-        if self.disk_inode_ref_count() == 0 {
-            self.clear()
-        }
+        self
     }
     /// Get the inode id
     pub fn disk_inode_id(&self) -> u32 {
@@ -117,16 +114,16 @@ impl Inode {
         new_size: u32,
         disk_inode: &mut DiskInode,
         fs: &mut MutexGuard<EasyFileSystem>,
-    ) {
-        if new_size < disk_inode.size {
-            return;
+    ) -> &Self {
+        if new_size > disk_inode.size {
+            let blocks_needed = disk_inode.blocks_num_needed(new_size);
+            let mut v: Vec<u32> = Vec::new();
+            for _ in 0..blocks_needed {
+                v.push(fs.alloc_data());
+            }
+            disk_inode.increase_size(new_size, v, &self.block_device);
         }
-        let blocks_needed = disk_inode.blocks_num_needed(new_size);
-        let mut v: Vec<u32> = Vec::new();
-        for _ in 0..blocks_needed {
-            v.push(fs.alloc_data());
-        }
-        disk_inode.increase_size(new_size, v, &self.block_device);
+        self
     }
 
 
@@ -203,8 +200,8 @@ impl Inode {
     }
 
 
-    /// Clear the data in current inode
-    pub fn clear(&self) {
+    /// Clear the data in current inode, will not sync immediately
+    pub fn clear(&self) -> &Self {
         let mut fs = self.fs.lock();
         self.modify_disk_inode(|disk_inode| {
             let size = disk_inode.size;
@@ -214,11 +211,12 @@ impl Inode {
                 fs.dealloc_data(data_block);
             }
         });
-        block_cache_sync_all();
+        self
     }
 
+
     /// Append a dirent to current inode
-    pub fn append_entry(&self, name: &str, inode_id: u32) {
+    pub fn append_entry(&self, name: &str, inode_id: u32) -> &Self {
         let entry = DirEntry::new(name, inode_id);
 
         let mut fs = self.fs.lock();
@@ -234,12 +232,12 @@ impl Inode {
                     &self.block_device)
             }
         );
-        block_cache_sync_all()
+        self
     }
 
 
     /// Remove a dirent from current inode
-    pub fn remove_entry(&self, name: &str) {
+    pub fn remove_entry(&self, name: &str) -> &Self {
         assert!(self.is_dir());
         self.modify_disk_inode(|dinode| {
             if let Some(i) = dinode.entries(&self.block_device).iter().position(
@@ -261,6 +259,12 @@ impl Inode {
             }
             dinode.size -= DIRENT_SZ as u32;
         });
+        self
+    }
+
+    /// Sync data to disk
+    pub fn sync(&self) -> &Self {
         block_cache_sync_all();
+        self
     }
 }
