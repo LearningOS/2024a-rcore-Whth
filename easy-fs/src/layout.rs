@@ -111,6 +111,11 @@ impl DiskInode {
     pub fn data_blocks(&self) -> u32 {
         Self::_data_blocks(self.size)
     }
+
+    pub fn file_count(&self) -> usize {
+        assert!(self.is_dir());
+        self.size as usize / DIRENT_SZ
+    }
     fn _data_blocks(size: u32) -> u32 {
         (size + BLOCK_SZ as u32 - 1) / BLOCK_SZ as u32
     }
@@ -308,7 +313,7 @@ impl DiskInode {
         self.indirect2 = 0;
         v
     }
-    /// Read data from current disk inode
+    /// Read data from current disk inode and return the length of data read.
     pub fn read_at(
         &self,
         offset: usize,
@@ -333,11 +338,11 @@ impl DiskInode {
                 self.get_block_id(start_block as u32, block_device) as usize,
                 Arc::clone(block_device),
             )
-            .lock()
-            .read(0, |data_block: &DataBlock| {
-                let src = &data_block[start % BLOCK_SZ..start % BLOCK_SZ + block_read_size];
-                dst.copy_from_slice(src);
-            });
+                .lock()
+                .read(0, |data_block: &DataBlock| {
+                    let src = &data_block[start % BLOCK_SZ..start % BLOCK_SZ + block_read_size];
+                    dst.copy_from_slice(src);
+                });
             read_size += block_read_size;
             // move to next block
             if end_current_block == end {
@@ -371,12 +376,12 @@ impl DiskInode {
                 self.get_block_id(start_block as u32, block_device) as usize,
                 Arc::clone(block_device),
             )
-            .lock()
-            .modify(0, |data_block: &mut DataBlock| {
-                let src = &buf[write_size..write_size + block_write_size];
-                let dst = &mut data_block[start % BLOCK_SZ..start % BLOCK_SZ + block_write_size];
-                dst.copy_from_slice(src);
-            });
+                .lock()
+                .modify(0, |data_block: &mut DataBlock| {
+                    let src = &buf[write_size..write_size + block_write_size];
+                    let dst = &mut data_block[start % BLOCK_SZ..start % BLOCK_SZ + block_write_size];
+                    dst.copy_from_slice(src);
+                });
             write_size += block_write_size;
             // move to next block
             if end_current_block == end {
@@ -386,6 +391,28 @@ impl DiskInode {
             start = end_current_block;
         }
         write_size
+    }
+
+
+    pub fn entries(&self, block_device: &Arc<dyn BlockDevice>) -> Vec<DirEntry> {
+        (0..self.file_count()).map(
+            |i| {
+                let mut entry = DirEntry::empty();
+                self.read_at(i * DIRENT_SZ, entry.as_bytes_mut(), block_device);
+                entry
+            }
+        )
+            .collect()
+    }
+    pub fn drop_entry(&mut self, entry_id: usize, block_device: &Arc<dyn BlockDevice>) -> Option<DirEntry> {
+        if entry_id < self.entries(&block_device).len() {
+            let mut entry = DirEntry::empty();
+            self.read_at(entry_id * DIRENT_SZ, entry.as_bytes_mut(), block_device);
+            self.write_at(entry_id * DIRENT_SZ, &DirEntry::empty().as_bytes(), block_device);
+            Some(entry)
+        } else {
+            None
+        }
     }
 }
 /// A directory entry
