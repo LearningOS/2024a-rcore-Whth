@@ -1,6 +1,6 @@
 use super::{
     block_cache_sync_all, get_block_cache, BlockDevice, DirEntry, DiskInode, DiskInodeType,
-    EasyFileSystem, DIRENT_SZ, REF_COUNT_SZ,
+    EasyFileSystem, DIRENT_SZ,
 };
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
@@ -137,18 +137,17 @@ impl Inode {
             .lock()
             .modify(new_inode_block_offset, |new_inode: &mut DiskInode| {
                 new_inode.initialize(DiskInodeType::File);
-                new_inode.increase_size(REF_COUNT_SZ as u32, vec![fs.alloc_data()], &self.block_device)
             });
         self.modify_disk_inode(|root_inode| {
             // append file in the dirent
             let file_count = (root_inode.size as usize) / DIRENT_SZ;
-            let new_size = REF_COUNT_SZ + (file_count + 1) * DIRENT_SZ;
+            let new_size = (file_count + 1) * DIRENT_SZ;
             // increase size
             self.increase_size(new_size as u32, root_inode, &mut fs);
             // write dirent
             let dirent = DirEntry::new(name, new_inode_id);
             root_inode.write_at(
-                REF_COUNT_SZ + file_count * DIRENT_SZ,
+                file_count * DIRENT_SZ,
                 dirent.as_bytes(),
                 &self.block_device,
             );
@@ -156,7 +155,6 @@ impl Inode {
         });
 
         let (block_id, block_offset) = fs.get_disk_inode_pos(new_inode_id);
-
         block_cache_sync_all();
         // return inode
         Some(Arc::new(Self::new(
@@ -184,14 +182,14 @@ impl Inode {
             self.modify_disk_inode(|root_dinode| {
 
                 // append file in the dirent
-                let file_count = (root_dinode.size as usize) / DIRENT_SZ;
-                let new_size = REF_COUNT_SZ + (file_count + 1) * DIRENT_SZ;
+                let file_count = root_dinode.file_count();
+                let new_size = (file_count + 1) * DIRENT_SZ;
                 // increase size
                 self.increase_size(new_size as u32, root_dinode, &mut fs);
                 // write dirent
                 let dirent = link_entry;
                 root_dinode.write_at(
-                    REF_COUNT_SZ + file_count * DIRENT_SZ,
+                    file_count * DIRENT_SZ,
                     dirent.as_bytes(),
                     &self.block_device,
                 );
@@ -218,7 +216,6 @@ impl Inode {
             }
 
 
-            block_cache_sync_all();
             self.drop_direntry(name)
         } else { false }
     }
