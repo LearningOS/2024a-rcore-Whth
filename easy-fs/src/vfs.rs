@@ -42,7 +42,9 @@ impl Inode {
     pub fn sub_ref_count(&self) {
         self.modify_disk_inode(|inode| inode.sub_ref_count());
         block_cache_sync_all();
-        self.clear()
+        if self.disk_inode_ref_count() == 0 {
+            self.clear()
+        }
     }
     /// Get the inode id
     pub fn disk_inode_id(&self) -> u32 {
@@ -181,11 +183,7 @@ impl Inode {
     pub fn ls(&self) -> Vec<String> {
         let _fs = self.fs.lock();
         self.read_disk_inode(|disk_inode| {
-            disk_inode.entries(&self.block_device).iter().filter_map(|en| if en.name() == "" {
-                None
-            } else {
-                Some(en.name().to_string())
-            }).collect::<Vec<_>>()
+            disk_inode.entries(&self.block_device).iter().map(|entry| entry.name().to_string()).collect()
         })
     }
     /// Read data from current inode
@@ -209,9 +207,6 @@ impl Inode {
     pub fn clear(&self) {
         let mut fs = self.fs.lock();
         self.modify_disk_inode(|disk_inode| {
-            if !disk_inode.is_isolated() {
-                return;
-            }
             let size = disk_inode.size;
             let data_blocks_dealloc = disk_inode.clear_size(&self.block_device);
             assert_eq!(data_blocks_dealloc.len(), DiskInode::total_blocks(size) as usize);
@@ -259,7 +254,6 @@ impl Inode {
                             {
                                 let mut entry_trunck = DirEntry::empty();
                                 dinode.read_at(entry_index * DIRENT_SZ, entry_trunck.as_bytes_mut(), &self.block_device);
-                                dinode.write_at(entry_index * DIRENT_SZ, DirEntry::empty().as_bytes(), &self.block_device);
 
                                 dinode.write_at((entry_index - 1) * DIRENT_SZ, entry_trunck.as_bytes(), &self.block_device);
                             })

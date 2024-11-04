@@ -140,8 +140,8 @@ pub fn make_link(name: &str, linkname: &str) -> bool {
 /// Remove a link
 pub fn remove_link(name: &str) -> bool {
     if let Some(inode) = ROOT_INODE.find(name) {
-        inode.sub_ref_count();
         ROOT_INODE.remove_entry(name);
+        inode.sub_ref_count();
         true
     } else {
         false
