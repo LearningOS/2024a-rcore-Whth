@@ -1,5 +1,6 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
 use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
+use crate::task::current_user_token;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -216,7 +217,31 @@ pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
         .unwrap()
         .get_mut()
 }
+/// copy a value from kernel space to user space
+#[allow(unused)]
+pub fn copy_to_cur_user<T>(src: &T, dst: *mut T)
+where
+    T: Copy + 'static,
+{
+    let token = current_user_token();
+    let dst_refmut = translated_refmut::<T>(token, dst);
 
+    *dst_refmut = *src
+}
+
+/// copy a value from user space to kernel space
+#[allow(unused)]
+pub fn copy_from_user<T>(src: usize, dst: &mut T) -> bool
+where
+
+    T: Copy + 'static,
+{
+    let token = current_user_token();
+    let src_refmut = translated_refmut::<T>(token, src as *mut T);
+
+    *dst = *src_refmut;
+    true
+}
 /// An abstraction over a buffer passed from user space to kernel space
 pub struct UserBuffer {
     /// A list of buffers
