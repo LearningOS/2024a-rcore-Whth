@@ -158,20 +158,20 @@ pub fn sys_semaphore_up(sem_id: usize) -> isize {
 }
 /// semaphore down syscall
 pub fn sys_semaphore_down(sem_id: usize) -> isize {
+    let tid = current_task().unwrap().get_tid();
+    info!("thread {} down semaphore {}", tid, sem_id);
     trace!(
         "kernel:pid[{}] tid[{}] sys_semaphore_down",
         current_task().unwrap().process.upgrade().unwrap().getpid(),
-        current_task()
-            .unwrap()
-            .inner_exclusive_access()
-            .res
-            .as_ref()
-            .unwrap()
-            .tid
+        tid
     );
     let process = current_process();
 
-    if process.is_deadlock_detect_enabled() && (process.resolve_semaphore_dependency(current_task().unwrap().get_tid(), sem_id)) {
+    info!("thread {} check deadlock", tid);
+    if process.is_deadlock_detect_enabled() && // check  if deadlock detected is enabled
+        (process.resolve_semaphore_dependency(tid, sem_id) // check if there is dependency loop
+            || process.possessed_semaphore_count(tid, sem_id) == process.all_counts(sem_id)) // check if thread reach the max count
+    {
         return -0xDEAD;
     }
     let process_inner = process.inner_exclusive_access();

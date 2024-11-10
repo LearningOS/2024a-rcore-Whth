@@ -32,7 +32,8 @@ impl TaskControlBlock {
 
     /// Get the unique ID of the task
     pub fn get_tid(&self) -> usize {
-        self.inner.exclusive_access().res.as_ref().unwrap().tid
+        trace!("kernel: get_tid");
+        self.inner_exclusive_access().res.as_ref().unwrap().tid
     }
 }
 

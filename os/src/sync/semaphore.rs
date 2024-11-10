@@ -40,13 +40,14 @@ impl Semaphore {
         if inner.count <= 0 {
             if let Some(task) = inner.wait_queue.pop_front() {
                 // 当信号量释放时，从持有人列表中移除当前任务
-                if let Some(current_task) = current_task() {
-                    inner.holders.retain(|holder| holder.get_tid() != current_task.get_tid());
-                }
+                drop(inner);
+                self.remove_holder(current_task().unwrap());
+                self.add_holder(task.clone());
                 wakeup_task(task);
             }
         }
     }
+
 
     /// down operation of semaphore
     /// acquire the semaphore
@@ -54,14 +55,24 @@ impl Semaphore {
         trace!("kernel: Semaphore::down");
         let mut inner = self.inner.exclusive_access();
         inner.count -= 1;
+        let task = current_task().unwrap();
         if inner.count < 0 {
-            inner.wait_queue.push_back(current_task().unwrap());
+            inner.wait_queue.push_back(task.clone());
             drop(inner);
+            trace!("kernel: Semaphore::down .. block_current_and_run_next");
             block_current_and_run_next();
-        } else {
-            inner.holders.push_back(current_task().unwrap()); // 添加持有人
-
+            trace!("kernel: Semaphore::down .. waked up task")
         }
+    }
+
+    fn add_holder(&self, task: Arc<TaskControlBlock>) {
+        trace!("kernel: Semaphore::add_holder");
+        self.inner.exclusive_access().holders.push_back(task);
+    }
+
+    fn remove_holder(&self, task: Arc<TaskControlBlock>) {
+        trace!("kernel: Semaphore::remove_holder");
+        self.inner.exclusive_access().holders.retain(|t| t.get_tid() != task.get_tid())
     }
     /// accessor of count
     pub fn remaining(&self) -> isize {
@@ -78,20 +89,19 @@ impl Semaphore {
     /// accessor of holders
     pub fn holders(&self) -> VecDeque<Arc<TaskControlBlock>> {
         trace!("kernel: Semaphore::holders");
-        let inner = self.inner.exclusive_access();
-        inner.holders.clone()
+        self.inner.exclusive_access().holders.clone()
     }
 
     /// accessor of all resource count
     pub fn all_resource_count(&self) -> usize {
         trace!("kernel: Semaphore::all_resource_count");
-        let inner = self.inner.exclusive_access();
+        let inner = self.inner.exclusive_access().holders.len();
         if self.remaining() > 0 {
             //if count>0, then the resource is not exhausted
-            self.remaining() as usize + inner.holders.len()
+            self.remaining() as usize + inner
         } else {
             // count<0, then the resource is exhausted
-            inner.holders.len()
+            inner
         }
     }
 
