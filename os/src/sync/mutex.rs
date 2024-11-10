@@ -5,7 +5,7 @@ use crate::task::TaskControlBlock;
 use crate::task::{block_current_and_run_next, suspend_current_and_run_next};
 use crate::task::{current_task, wakeup_task};
 use alloc::vec::Vec;
-use alloc::{collections::VecDeque, sync::Arc};
+use alloc::{collections::VecDeque, sync::Arc, vec};
 
 /// Mutex trait
 pub trait Mutex<T>: Sync + Send + TraceProcession<T> {
@@ -23,35 +23,25 @@ pub trait TraceProcession<T> {
 }
 /// Spinlock Mutex struct
 pub struct MutexSpin {
-    inner: UPSafeCell<MutexSpinInner>,
-}
-
-struct MutexSpinInner {
-    holder: Option<Arc<TaskControlBlock>>, // 记录持有锁的线程
-    waiters: VecDeque<Arc<TaskControlBlock>>, // 记录等待锁的线程队列
+    locked: UPSafeCell<bool>,
 }
 
 impl MutexSpin {
     /// Create a new spinlock mutex
     pub fn new() -> Self {
         Self {
-            inner: unsafe {
-                UPSafeCell::new(MutexSpinInner {
-                    holder: None,
-                    waiters: VecDeque::new(),
-                })
-            },
+            locked: unsafe { UPSafeCell::new(false) },
         }
     }
 }
 
 impl TraceProcession<TaskControlBlock> for MutexSpin {
     fn trace_owner(&self) -> Option<Arc<TaskControlBlock>> {
-        self.inner.exclusive_access().holder.clone()
+        None
     }
 
     fn trace_waiters(&self) -> Vec<Arc<TaskControlBlock>> {
-        self.inner.exclusive_access().waiters.iter().cloned().collect()
+        vec![]
     }
 }
 
@@ -60,17 +50,13 @@ impl Mutex<TaskControlBlock> for MutexSpin {
     fn lock(&self) {
         trace!("kernel: MutexSpin::lock");
         loop {
-            let mut inner = self.inner.exclusive_access();
-            if inner.holder.is_some() {
-                drop(inner);
-                {
-                    let mut inner = self.inner.exclusive_access();
-                    inner.waiters.push_back(current_task().unwrap());
-                }
+            let mut locked = self.locked.exclusive_access();
+            if *locked {
+                drop(locked);
                 suspend_current_and_run_next();
                 continue;
             } else {
-                inner.holder = Some(current_task().unwrap());
+                *locked = true;
                 return;
             }
         }
@@ -79,16 +65,8 @@ impl Mutex<TaskControlBlock> for MutexSpin {
     /// Unlock the spinlock mutex
     fn unlock(&self) {
         trace!("kernel: MutexSpin::unlock");
-        let mut inner = self.inner.exclusive_access();
-        assert!(inner.holder.is_some());
-        assert_eq!(inner.holder.clone().unwrap().get_tid(), current_task().unwrap().get_tid()); // 确保解锁的是当前持有锁的线程
-
-        inner.holder = None;
-
-        if let Some(waking_task) = inner.waiters.pop_front() {
-            wakeup_task(waking_task.clone());
-            inner.holder = Some(waking_task);
-        }
+        let mut locked = self.locked.exclusive_access();
+        *locked = false;
     }
 }
 
