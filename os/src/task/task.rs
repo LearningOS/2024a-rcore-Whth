@@ -13,6 +13,7 @@ pub struct TaskControlBlock {
     pub process: Weak<ProcessControlBlock>,
     /// Kernel stack corresponding to PID
     pub kstack: KernelStack,
+
     /// mutable
     inner: UPSafeCell<TaskControlBlockInner>,
 }
@@ -28,6 +29,11 @@ impl TaskControlBlock {
         let inner = process.inner_exclusive_access();
         inner.memory_set.token()
     }
+
+    /// Get the unique ID of the task
+    pub fn get_tid(&self) -> usize {
+        self.inner.exclusive_access().res.as_ref().unwrap().tid
+    }
 }
 
 pub struct TaskControlBlockInner {
@@ -41,6 +47,7 @@ pub struct TaskControlBlockInner {
     pub task_status: TaskStatus,
     /// It is set when active exit or execution error occurs
     pub exit_code: Option<i32>,
+
 }
 
 impl TaskControlBlockInner {

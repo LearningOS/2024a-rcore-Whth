@@ -1,5 +1,5 @@
 use crate::sync::{Condvar, Mutex, MutexBlocking, MutexSpin, Semaphore};
-use crate::task::{block_current_and_run_next, current_process, current_task};
+use crate::task::{block_current_and_run_next, current_process, current_task, TaskControlBlock};
 use crate::timer::{add_timer, get_time_ms};
 use alloc::sync::Arc;
 /// sleep syscall
@@ -35,7 +35,7 @@ pub fn sys_mutex_create(blocking: bool) -> isize {
             .tid
     );
     let process = current_process();
-    let mutex: Option<Arc<dyn Mutex>> = if !blocking {
+    let mutex: Option<Arc<dyn Mutex<TaskControlBlock>>> = if !blocking {
         Some(Arc::new(MutexSpin::new()))
     } else {
         Some(Arc::new(MutexBlocking::new()))
@@ -71,6 +71,11 @@ pub fn sys_mutex_lock(mutex_id: usize) -> isize {
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
     let mutex = Arc::clone(process_inner.mutex_list[mutex_id].as_ref().unwrap());
+    if process.is_deadlock_detect_enabled() && process.resolve_mutex_dependency(current_task().unwrap().get_tid(), mutex_id) {
+
+        // deadlock detected
+        return -0xDEAD;
+    }
     drop(process_inner);
     drop(process);
     mutex.lock();
@@ -247,5 +252,7 @@ pub fn sys_condvar_wait(condvar_id: usize, mutex_id: usize) -> isize {
 /// YOUR JOB: Implement deadlock detection, but might not all in this syscall
 pub fn sys_enable_deadlock_detect(_enabled: usize) -> isize {
     trace!("kernel: sys_enable_deadlock_detect NOT IMPLEMENTED");
-    -1
+
+    current_process().enable_deadlock_detect();
+    0
 }

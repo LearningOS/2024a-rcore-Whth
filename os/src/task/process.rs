@@ -9,6 +9,7 @@ use crate::fs::{File, Stdin, Stdout};
 use crate::mm::{translated_refmut, MemorySet, KERNEL_SPACE};
 use crate::sync::{Condvar, Mutex, Semaphore, UPSafeCell};
 use crate::trap::{trap_handler, TrapContext};
+use alloc::collections::{BTreeSet, VecDeque};
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
@@ -21,6 +22,27 @@ pub struct ProcessControlBlock {
     pub pid: PidHandle,
     /// mutable
     inner: UPSafeCell<ProcessControlBlockInner>,
+}
+
+
+impl Default for ProcessControlBlockInner {
+    fn default() -> Self {
+        Self {
+            is_zombie: false,
+            memory_set: MemorySet::new_bare(),
+            parent: None,
+            children: Vec::new(),
+            exit_code: 0,
+            fd_table: vec![None, Some(Arc::new(Stdin)), Some(Arc::new(Stdout))],
+            signals: SignalFlags::empty(),
+            tasks: Vec::new(),
+            task_res_allocator: RecycleAllocator::new(),
+            mutex_list: Vec::new(),
+            semaphore_list: Vec::new(),
+            condvar_list: Vec::new(),
+            enabled_dead_lock_detection: false,
+        }
+    }
 }
 
 /// Inner of Process Control Block
@@ -44,11 +66,14 @@ pub struct ProcessControlBlockInner {
     /// task resource allocator
     pub task_res_allocator: RecycleAllocator,
     /// mutex list
-    pub mutex_list: Vec<Option<Arc<dyn Mutex>>>,
+    pub mutex_list: Vec<Option<Arc<dyn Mutex<TaskControlBlock>>>>,
     /// semaphore list
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+
+    /// enable dead lock detection
+    pub enabled_dead_lock_detection: bool,
 }
 
 impl ProcessControlBlockInner {
@@ -100,11 +125,7 @@ impl ProcessControlBlock {
             pid: pid_handle,
             inner: unsafe {
                 UPSafeCell::new(ProcessControlBlockInner {
-                    is_zombie: false,
                     memory_set,
-                    parent: None,
-                    children: Vec::new(),
-                    exit_code: 0,
                     fd_table: vec![
                         // 0 -> stdin
                         Some(Arc::new(Stdin)),
@@ -113,12 +134,7 @@ impl ProcessControlBlock {
                         // 2 -> stderr
                         Some(Arc::new(Stdout)),
                     ],
-                    signals: SignalFlags::empty(),
-                    tasks: Vec::new(),
-                    task_res_allocator: RecycleAllocator::new(),
-                    mutex_list: Vec::new(),
-                    semaphore_list: Vec::new(),
-                    condvar_list: Vec::new(),
+                    ..ProcessControlBlockInner::default()
                 })
             },
         });
@@ -233,18 +249,10 @@ impl ProcessControlBlock {
             pid,
             inner: unsafe {
                 UPSafeCell::new(ProcessControlBlockInner {
-                    is_zombie: false,
                     memory_set,
                     parent: Some(Arc::downgrade(self)),
-                    children: Vec::new(),
-                    exit_code: 0,
                     fd_table: new_fd_table,
-                    signals: SignalFlags::empty(),
-                    tasks: Vec::new(),
-                    task_res_allocator: RecycleAllocator::new(),
-                    mutex_list: Vec::new(),
-                    semaphore_list: Vec::new(),
-                    condvar_list: Vec::new(),
+                    ..ProcessControlBlockInner::default()
                 })
             },
         });
@@ -281,5 +289,141 @@ impl ProcessControlBlock {
     /// get pid
     pub fn getpid(&self) -> usize {
         self.pid.0
+    }
+
+
+    /// enable deadlock detection
+    pub fn enable_deadlock_detect(&self) {
+        trace!("kernel: enable deadlock detection");
+        self.inner_exclusive_access().enabled_dead_lock_detection = true;
+    }
+
+
+    /// disable deadlock detection
+
+    pub fn disable_deadlock_detect(&self) {
+        trace!("kernel: disable deadlock detection");
+        self.inner_exclusive_access().enabled_dead_lock_detection = false;
+    }
+
+    /// check if deadlock detection is enabled
+    pub fn is_deadlock_detect_enabled(&self) -> bool {
+        self.inner_exclusive_access().enabled_dead_lock_detection
+    }
+
+    /// resolve the dependency of the mutex for the given task
+    /// that 's say check if the given task can acquire the mutex without causing a deadlock
+    /// - true for do cause deadlock
+    /// - false for do not cause deadlock
+    /// # Using BFS to detect loop dependency
+    /// check if that the thread with tid get into the waitqueue of the mutex in `mutex_id`  will cause
+    /// the owner of the mutex in `mutex_id` depends on the mutex processed by the given thread tid
+    ///
+    /// ** note: the check will not allocate mutex to the thread during the check,
+    /// *and assume there is no deadlock in the system already, this check is a pre-test to check if
+    /// user will cause a deadlock if the given thread does have acquired the mutex in `mutex_id`
+    pub fn resolve_mutex_dependency(&self, tid: usize, mutex_id: usize) -> bool {
+        trace!("kernel: resolve");
+        assert!(self.is_deadlock_detect_enabled());
+
+        // Get the current holder of the mutex that the thread is trying to acquire
+        if let Some(holder_tid) = self.get_mutex_holder(mutex_id) {
+
+
+            // A set to keep track of visited threads to avoid cycles
+            let mut visited = BTreeSet::new();
+            // A queue for BFS, starting with the holder of the mutex
+            let mut queue = VecDeque::new();
+            queue.push_back(holder_tid);
+            visited.insert(holder_tid);
+
+            while let Some(current_tid) = queue.pop_front() {
+                // Get all mutexes held by the current thread
+                self.possessed_mutexes(current_tid)
+                    .iter()
+                    .any(
+                        |&possessed_mutex|
+                            {
+                                self.get_mutex_waiting_tasks(possessed_mutex)
+                                    .iter()
+                                    .map(|&other_waiting_tid| {
+                                        // add the waiting thread to the queue if it hasn't been marked as visited
+                                        if !visited.contains(&other_waiting_tid) {
+                                            visited.insert(other_waiting_tid);
+                                            queue.push_back(other_waiting_tid);
+                                        }
+
+                                        // return the waiting thread intact
+                                        other_waiting_tid
+                                    })
+                                    .any(
+                                        |waiting_tid| {
+                                            // If the waiting thread is the thread we're trying to acquire,
+                                            // then we have a cycle and a deadlock will occur
+                                            waiting_tid == tid
+                                        }
+                                    )
+                            }
+                    );
+            }
+        }
+        // If we exit the loop without finding a cycle, no deadlock will be caused
+        false
+    }
+
+    /// get the holder of the given mutex
+    pub fn get_mutex_holder(&self, mutex_id: usize) -> Option<usize> {
+        let inner = self.inner_exclusive_access();
+        if let Some(Some(lock)) = inner.mutex_list.get(mutex_id) {
+            lock.trace_owner().map(|t| t.get_tid())
+        } else {
+            None
+        }
+    }
+
+    /// get the tasks that are waiting for the given mutex
+    pub fn get_mutex_waiting_tasks(&self, mutex_id: usize) -> Vec<usize> {
+        trace!("kernel: get waiting tasks");
+        let inner = self.inner_exclusive_access();
+        if let Some(Some(lock)) = inner.mutex_list.get(mutex_id) {
+            lock.trace_waiters().iter().map(|t| t.get_tid()).collect()
+        } else {
+            vec![]
+        }
+    }
+
+    /// get the mutexes that the given task has possessed
+    /// *return a vector of mutex id
+    pub fn possessed_mutexes(&self, tid: usize) -> Vec<usize> {
+        trace!("kernel: get processed mutexes");
+        let inner = self.inner_exclusive_access();
+        inner.mutex_list.iter().enumerate().filter_map(|(i, lock)| {
+            return match lock {
+                Some(ava_lock) if ava_lock.trace_owner()?.get_tid() == tid => {
+                    Some(i)
+                }
+                _ => {
+                    None
+                }
+            };
+        }).collect()
+    }
+
+    /// get the mutexes that the given task is waiting for
+    pub fn waiting_mutexes(&self, tid: usize) -> Vec<usize> {
+        trace!("kernel: get waiting mutexes");
+        let inner = self.inner_exclusive_access();
+        inner.mutex_list.iter().enumerate().filter_map(|(i, lock)| {
+            return match lock {
+                Some(ava_lock)
+                // check if the given task is in the wait queue of the mutex
+                if ava_lock.trace_waiters().iter().any(|waiting_task| waiting_task.get_tid() == tid) => {
+                    Some(i)
+                }
+                _ => {
+                    None
+                }
+            };
+        }).collect()
     }
 }
