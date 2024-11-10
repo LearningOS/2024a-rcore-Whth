@@ -37,13 +37,14 @@ impl Semaphore {
         trace!("kernel: Semaphore::up");
         let mut inner = self.inner.exclusive_access();
         inner.count += 1;
+        let cur_task = current_task().unwrap(); // task that will release the semaphore
+        inner.holders.retain(|t| t.get_tid() != cur_task.get_tid()); // remove the current task from holder list
         if inner.count <= 0 {
-            if let Some(task) = inner.wait_queue.pop_front() {
-                // 当信号量释放时，从持有人列表中移除当前任务
-                drop(inner);
-                self.remove_holder(current_task().unwrap());
-                self.add_holder(task.clone());
-                wakeup_task(task);
+            if let Some(waiting_task) = inner.wait_queue.pop_front() {
+                // add the task to holder list
+                inner.holders.push_back(waiting_task.clone());
+
+                wakeup_task(waiting_task);
             }
         }
     }
@@ -57,22 +58,14 @@ impl Semaphore {
         inner.count -= 1;
         let task = current_task().unwrap();
         if inner.count < 0 {
-            inner.wait_queue.push_back(task.clone());
+            inner.wait_queue.push_back(task);
             drop(inner);
             trace!("kernel: Semaphore::down .. block_current_and_run_next");
             block_current_and_run_next();
             trace!("kernel: Semaphore::down .. waked up task")
+        } else {
+            inner.holders.push_back(task);
         }
-    }
-
-    fn add_holder(&self, task: Arc<TaskControlBlock>) {
-        trace!("kernel: Semaphore::add_holder");
-        self.inner.exclusive_access().holders.push_back(task);
-    }
-
-    fn remove_holder(&self, task: Arc<TaskControlBlock>) {
-        trace!("kernel: Semaphore::remove_holder");
-        self.inner.exclusive_access().holders.retain(|t| t.get_tid() != task.get_tid())
     }
     /// accessor of count
     pub fn remaining(&self) -> isize {
@@ -111,5 +104,19 @@ impl Semaphore {
         trace!("kernel: Semaphore::waitting_tasks");
         let inner = self.inner.exclusive_access();
         inner.wait_queue.clone()
+    }
+
+    /// remove the thread from the semaphore entirely,both from the holder list and the waiting list
+    pub fn unregister_thread(&self, thread: Arc<TaskControlBlock>) {
+        trace!("kernel: Semaphore::unregister_thread");
+        println!(" unregister start");
+
+        let mut inner = self.inner.exclusive_access();
+        println!("wait_queue unregister start");
+
+        inner.wait_queue.retain(|t| Arc::as_ptr(t) != Arc::as_ptr(&thread));
+        println!("holders unregister start");
+
+        inner.holders.retain(|t| Arc::as_ptr(t) != Arc::as_ptr(&thread));
     }
 }

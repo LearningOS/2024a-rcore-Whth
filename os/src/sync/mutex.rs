@@ -119,11 +119,7 @@ impl MutexBlocking {
 
 impl TraceProcession<TaskControlBlock> for MutexBlocking {
     fn trace_owner(&self) -> Option<Arc<TaskControlBlock>> {
-        if let Some(holder) = self.inner.exclusive_access().holder.clone() {
-            Some(holder)
-        } else {
-            None
-        }
+        self.inner.exclusive_access().holder.clone()
     }
 
     fn trace_waiters(&self) -> Vec<Arc<TaskControlBlock>> {

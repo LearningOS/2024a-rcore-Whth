@@ -9,7 +9,7 @@ use crate::fs::{File, Stdin, Stdout};
 use crate::mm::{translated_refmut, MemorySet, KERNEL_SPACE};
 use crate::sync::{Condvar, Mutex, Semaphore, UPSafeCell};
 use crate::trap::{trap_handler, TrapContext};
-use alloc::collections::{BTreeSet, VecDeque};
+use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
@@ -331,11 +331,9 @@ impl ProcessControlBlock {
             debug!("kernel: resolve: mutex {} is held by thread {}", mutex_id, holder_tid);
 
             // A set to keep track of visited threads to avoid cycles
-            let mut visited = BTreeSet::new();
             // A queue for BFS, starting with the holder of the mutex
             let mut queue = VecDeque::new();
             queue.push_back(holder_tid);
-            visited.insert(holder_tid);
 
 
             while let Some(current_tid) = queue.pop_front() {
@@ -350,10 +348,7 @@ impl ProcessControlBlock {
                                     .iter()
                                     .map(|&other_waiting_tid| {
                                         // add the waiting thread to the queue if it hasn't been marked as visited
-                                        if !visited.contains(&other_waiting_tid) {
-                                            visited.insert(other_waiting_tid);
-                                            queue.push_back(other_waiting_tid);
-                                        }
+                                        queue.push_back(other_waiting_tid);
 
                                         // return the waiting thread intact
                                         other_waiting_tid
@@ -511,7 +506,7 @@ impl ProcessControlBlock {
 
         // Get the current holders of the semaphore that the thread is trying to acquire
         let holders = self.get_sem_holders(sid);
-
+        debug!("kernel: resolve: checking dependency of semaphore {tid}|{sid}, sid holders {:?}", holders);
 
         if self.get_sem_remaining_count(sid) <= 0 {
             debug!("kernel: resolve: semaphore {} is held by threads {:?}", sid, holders);
@@ -523,7 +518,7 @@ impl ProcessControlBlock {
                 // Get all semaphores held by the current thread
                 if self.waiting_semaphores(sem_holder)
                     .iter()
-                    .all(|&sem_id| {
+                    .any(|&sem_id| {
                         self.get_sem_holders(sem_id)
                             .iter()
                             .any(|&holder| {

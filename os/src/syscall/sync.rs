@@ -138,28 +138,27 @@ pub fn sys_semaphore_create(res_count: usize) -> isize {
 }
 /// semaphore up syscall
 pub fn sys_semaphore_up(sem_id: usize) -> isize {
+    let tid = current_task().unwrap().get_tid();
+    info!("thread try {} up semaphore {}", tid, sem_id);
+
     trace!(
         "kernel:pid[{}] tid[{}] sys_semaphore_up",
         current_task().unwrap().process.upgrade().unwrap().getpid(),
-        current_task()
-            .unwrap()
-            .inner_exclusive_access()
-            .res
-            .as_ref()
-            .unwrap()
-            .tid
+        tid
     );
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
     drop(process_inner);
     sem.up();
+    debug!("thread{tid} up {sem_id} success");
+
     0
 }
 /// semaphore down syscall
 pub fn sys_semaphore_down(sem_id: usize) -> isize {
     let tid = current_task().unwrap().get_tid();
-    info!("thread {} down semaphore {}", tid, sem_id);
+    info!("thread try {} down semaphore {}", tid, sem_id);
     trace!(
         "kernel:pid[{}] tid[{}] sys_semaphore_down",
         current_task().unwrap().process.upgrade().unwrap().getpid(),
@@ -170,7 +169,7 @@ pub fn sys_semaphore_down(sem_id: usize) -> isize {
     info!("thread {} check deadlock", tid);
     if process.is_deadlock_detect_enabled() && // check  if deadlock detected is enabled
         (process.resolve_semaphore_dependency(tid, sem_id) // check if there is dependency loop
-            || process.possessed_semaphore_count(tid, sem_id) == process.all_counts(sem_id)) // check if thread reach the max count
+            || process.all_counts(sem_id) == process.get_sem_holders(sem_id).iter().filter(|&&holder_id| holder_id == tid).count())
     {
         return -0xDEAD;
     }
@@ -178,6 +177,7 @@ pub fn sys_semaphore_down(sem_id: usize) -> isize {
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
     drop(process_inner);
     sem.down();
+    debug!("thread{tid} down {sem_id} success");
     0
 }
 /// condvar create syscall

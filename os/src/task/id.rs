@@ -187,7 +187,14 @@ impl TaskUserRes {
     fn dealloc_user_res(&self) {
         // dealloc tid
         let process = self.process.upgrade().unwrap();
+
         let mut process_inner = process.inner_exclusive_access();
+
+
+        process_inner
+            .semaphore_list
+            .iter()
+            .for_each(|s| s.clone().unwrap().unregister_thread(process_inner.get_task(self.tid)));
         // dealloc ustack manually
         let ustack_bottom_va: VirtAddr = ustack_bottom_from_tid(self.ustack_base, self.tid).into();
         process_inner
