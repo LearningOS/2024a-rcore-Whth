@@ -69,13 +69,15 @@ pub fn sys_mutex_lock(mutex_id: usize) -> isize {
             .tid
     );
     let process = current_process();
-    let process_inner = process.inner_exclusive_access();
-    let mutex = Arc::clone(process_inner.mutex_list[mutex_id].as_ref().unwrap());
-    if process.is_deadlock_detect_enabled() && process.resolve_mutex_dependency(current_task().unwrap().get_tid(), mutex_id) {
+
+    if process.is_deadlock_detect_enabled() && (process.resolve_mutex_dependency(current_task().unwrap().get_tid(), mutex_id)
+        || (process.get_mutex_holder(mutex_id)) == Some(current_task().unwrap().get_tid())) {
 
         // deadlock detected
         return -0xDEAD;
     }
+    let process_inner = process.inner_exclusive_access();
+    let mutex = Arc::clone(process_inner.mutex_list[mutex_id].as_ref().unwrap());
     drop(process_inner);
     drop(process);
     mutex.lock();

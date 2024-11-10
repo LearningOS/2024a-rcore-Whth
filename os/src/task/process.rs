@@ -328,7 +328,7 @@ impl ProcessControlBlock {
 
         // Get the current holder of the mutex that the thread is trying to acquire
         if let Some(holder_tid) = self.get_mutex_holder(mutex_id) {
-
+            debug!("kernel: resolve: mutex {} is held by thread {}", mutex_id, holder_tid);
 
             // A set to keep track of visited threads to avoid cycles
             let mut visited = BTreeSet::new();
@@ -337,13 +337,15 @@ impl ProcessControlBlock {
             queue.push_back(holder_tid);
             visited.insert(holder_tid);
 
+
             while let Some(current_tid) = queue.pop_front() {
                 // Get all mutexes held by the current thread
-                self.possessed_mutexes(current_tid)
+                if self.possessed_mutexes(current_tid)
                     .iter()
                     .any(
                         |&possessed_mutex|
                             {
+                                debug!("kernel: resolve: thread {} is holding mutex {}", current_tid, possessed_mutex);
                                 self.get_mutex_waiting_tasks(possessed_mutex)
                                     .iter()
                                     .map(|&other_waiting_tid| {
@@ -364,7 +366,9 @@ impl ProcessControlBlock {
                                         }
                                     )
                             }
-                    );
+                    ) {
+                    return true;
+                }
             }
         }
         // If we exit the loop without finding a cycle, no deadlock will be caused
@@ -398,14 +402,14 @@ impl ProcessControlBlock {
         trace!("kernel: get processed mutexes");
         let inner = self.inner_exclusive_access();
         inner.mutex_list.iter().enumerate().filter_map(|(i, lock)| {
-            return match lock {
+            match lock {
                 Some(ava_lock) if ava_lock.trace_owner()?.get_tid() == tid => {
                     Some(i)
                 }
                 _ => {
                     None
                 }
-            };
+            }
         }).collect()
     }
 
