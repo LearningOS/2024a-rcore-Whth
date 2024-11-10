@@ -170,6 +170,10 @@ pub fn sys_semaphore_down(sem_id: usize) -> isize {
             .tid
     );
     let process = current_process();
+
+    if process.is_deadlock_detect_enabled() && (process.resolve_semaphore_dependency(current_task().unwrap().get_tid(), sem_id)) {
+        return -0xDEAD;
+    }
     let process_inner = process.inner_exclusive_access();
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
     drop(process_inner);

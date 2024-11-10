@@ -323,7 +323,7 @@ impl ProcessControlBlock {
     /// *and assume there is no deadlock in the system already, this check is a pre-test to check if
     /// user will cause a deadlock if the given thread does have acquired the mutex in `mutex_id`
     pub fn resolve_mutex_dependency(&self, tid: usize, mutex_id: usize) -> bool {
-        trace!("kernel: resolve");
+        trace!("kernel: resolve mutex dependency");
         assert!(self.is_deadlock_detect_enabled());
 
         // Get the current holder of the mutex that the thread is trying to acquire
@@ -429,5 +429,113 @@ impl ProcessControlBlock {
                 }
             };
         }).collect()
+    }
+
+    /// get the semaphores that the given task has possessed
+
+    pub fn possessed_semaphores(&self, tid: usize) -> Vec<usize> {
+        trace!("kernel: get processed semaspheres");
+        let inner = self.inner_exclusive_access();
+        inner.semaphore_list.iter().enumerate().filter_map(|(i, sem)| {
+            match sem {
+                Some(sem) if
+                sem.holders().iter().any(|task| task.get_tid() == tid) => {
+                    Some(i)
+                }
+                _ => { None }
+            }
+        }).collect()
+    }
+
+
+    /// get the semaphores that the given task is waiting for
+    pub fn waiting_semaphores(&self, tid: usize) -> Vec<usize> {
+        trace!("kernel: get waiting semaspheres");
+        let inner = self.inner_exclusive_access();
+        inner.semaphore_list.iter().enumerate().filter_map(|(i, sem)| {
+            match sem {
+                Some(sem)
+                // check if the given task is in the wait queue of the semaphore
+                if sem.waiting_tasks().iter().any(|waiting_task| waiting_task.get_tid() == tid) => {
+                    Some(i)
+                }
+                _ => {
+                    None
+                }
+            }
+        }).collect()
+    }
+
+
+    /// get the holders of the given semaphore
+    pub fn get_sem_holders(&self, sem_id: usize) -> Vec<usize> {
+        trace!("kernel: get semaphore holders");
+        let inner = self.inner_exclusive_access();
+        inner.semaphore_list[sem_id].as_ref().unwrap().holders().iter().map(|t| t.get_tid()).collect()
+    }
+
+
+    /// get the tasks that are waiting for the given semaphore
+    pub fn get_sem_waiting_tasks(&self, sem_id: usize) -> Vec<usize> {
+        trace!("kernel: get semaphore waiting tasks");
+        let inner = self.inner_exclusive_access();
+        inner.semaphore_list[sem_id].as_ref().unwrap().waiting_tasks().iter().map(|t| t.get_tid()).collect()
+    }
+
+
+    /// resolve the dependency of the given semaphore
+    /// ** Check if that the semaphore with `sid` is downed by 1 by the task with `tid` will cause a deadlock
+    pub fn resolve_semaphore_dependency(&self, tid: usize, sid: usize) -> bool {
+        trace!("kernel: resolve semaphore dependency");
+        assert!(self.is_deadlock_detect_enabled());
+
+        // Get the current holders of the semaphore that the thread is trying to acquire
+        let holders = self.get_sem_holders(sid);
+        if !holders.is_empty() {
+            debug!("kernel: resolve: semaphore {} is held by threads {:?}", sid, holders);
+
+            // A set to keep track of visited threads to avoid cycles
+            let mut visited = BTreeSet::new();
+            // A queue for BFS, starting with the holders of the semaphore
+            let mut queue = VecDeque::from(holders.clone());
+            for &holder_tid in &holders {
+                visited.insert(holder_tid);
+            }
+
+            while let Some(current_tid) = queue.pop_front() {
+                // Get all semaphores held by the current thread
+                if self.possessed_semaphores(current_tid)
+                    .iter()
+                    .any(
+                        |&possessed_semaphore|
+                            {
+                                debug!("kernel: resolve: thread {} is holding semaphore {}", current_tid, possessed_semaphore);
+                                self.get_sem_waiting_tasks(possessed_semaphore)
+                                    .iter()
+                                    .map(|&other_waiting_tid| {
+                                        // add the waiting thread to the queue if it hasn't been marked as visited
+                                        if !visited.contains(&other_waiting_tid) {
+                                            visited.insert(other_waiting_tid);
+                                            queue.push_back(other_waiting_tid);
+                                        }
+
+                                        // return the waiting thread intact
+                                        other_waiting_tid
+                                    })
+                                    .any(
+                                        |waiting_tid| {
+                                            // If the waiting thread is the thread we're trying to acquire,
+                                            // then we have a cycle and a deadlock will occur
+                                            waiting_tid == tid
+                                        }
+                                    )
+                            }
+                    ) {
+                    return true;
+                }
+            }
+        }
+        // If we exit the loop without finding a cycle, no deadlock will be caused
+        false
     }
 }
